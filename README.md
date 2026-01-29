@@ -6,7 +6,7 @@ UNiT is a technically advanced and physically-inspired post-processing shader li
 
 
 
-**A-GTVBAO: Analytical Ground-Truth Ambient Occlusion with Visiblity Bitmask.**
+**# A-GTVBAO: Analytical Ground-Truth Ambient Occlusion with Visiblity Bitmask.**
 
 * A modern screen-space ambient occlusion algorithm using analytic integration over the horizon using a bit-field masking, allowing for precise geometry/object occlusion of almost any scene.
 
@@ -14,7 +14,7 @@ UNiT is a technically advanced and physically-inspired post-processing shader li
 
 
 
-**Stothastic Filmic Grain: Fast Physically Correct Filmic Grain.**
+**# Stothastic Filmic Grain: Fast Physically Correct Filmic Grain.**
 
 * A fully physically based film grain model that operates on the principle of the Poisson distribution, which is the same principle that silver crystals in film emulsions obey.
 
@@ -22,7 +22,7 @@ UNiT is a technically advanced and physically-inspired post-processing shader li
 
 
 
-**Luminescence (Lumi-Bloom): Technically Advanced Lens Light Scattering.**
+**# Luminescence (Lumi-Bloom): Technically Advanced Lens Light Scattering.**
 
 * Simulation of the real process of light diffusion using several new techniques, which gives a pure-natural glow from point lights.
 
@@ -30,7 +30,7 @@ UNiT is a technically advanced and physically-inspired post-processing shader li
 
 
 
-**F-LLF: Fast Local Laplacian Filtering.**
+**# F-LLF: Fast Local Laplacian Filtering.**
 
 * A visually correct implementation of the image local contrast enhancement algorithm based on the Fast Local Laplacian Filtering method, adapted for real-time usage.
 
@@ -38,7 +38,7 @@ UNiT is a technically advanced and physically-inspired post-processing shader li
 
 
 
-**Spectral CA: Chromatic Aberration via Spectrum Integration.**
+**# Spectral CA: Chromatic Aberration via Spectrum Integration.**
 
 * Using continuous integration over the wavelength spectrum to obtain realistic prism color dispersion.
 
@@ -46,7 +46,7 @@ UNiT is a technically advanced and physically-inspired post-processing shader li
 
 
 
-**Frequency Sharpen: Frequency-Domain Detail Restoration Technique.**
+**# Frequency Sharpen: Frequency-Domain Detail Restoration Technique.**
 
 * An image sharpening method that uses frequency transform principles to highly accurate restore detail and enhance overall image detailing without contrast changing and halos.
 
