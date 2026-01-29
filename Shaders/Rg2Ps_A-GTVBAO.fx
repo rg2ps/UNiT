@@ -261,25 +261,6 @@ float2 erfinv(float2 x)
     return (sgn * sqrt(-tt1 + sqrt(tt1 * tt1 - tt2)));
 }
 
-float tex2Dsample(sampler2D s, float2 uv)
-{      
-    float2 offset;
-
-    // now uses the stochastic importance sampling
-    // each pixel receives a pure random but deterministic position within the sample
-    float dir = weyl_1d(uv * BUFFER_SCREEN_SIZE);
-    offset = weyl_2d(cos(dir / TAU)); 
-    offset = erfinv(offset * 2.0 - 1.0) * sqrt(2.0);
-
-    float a = tex2Dlod(s, float4(uv + float2( offset.x,  offset.y) * BUFFER_PIXEL_SIZE, 0, 0)).r;
-    float b = tex2Dlod(s, float4(uv + float2(-offset.x, -offset.y) * BUFFER_PIXEL_SIZE, 0, 0)).r;
-    float c = tex2Dlod(s, float4(uv,                                                    0, 0)).r;
-    float d = tex2Dlod(s, float4(uv + float2(-offset.y,  offset.x) * BUFFER_PIXEL_SIZE, 0, 0)).r;
-    float e = tex2Dlod(s, float4(uv + float2( offset.y, -offset.x) * BUFFER_PIXEL_SIZE, 0, 0)).r;
-
-    return (a + b + c + d + e) * 0.2;  
-}
-
 float get_fade_factor(float2 uv)
 {
     return saturate(saturate(length(ndc_to_view(uv)) / RESHADE_DEPTH_LINEARIZATION_FAR_PLANE) / _FadeDist);
@@ -429,34 +410,48 @@ void kalman_online(inout float4 value, in sampler2D s, float2 uv)
 	
 	const float learning_rate = _LearningRate;
 	
-	float depth = get_lin_depth(uv);
-	
-	bool is_dissoclusion = abs(depth - moments.w) > 2e-6;
-	
     // A very lax approximation of kalman via moving average..
 	float prediction = value.x - moments.x;
 	float covariance = lerp(moments.y, prediction, learning_rate);
-	float noise_ratio = sqrt(abs(dot(prediction, prediction) - covariance * covariance));
+	float noise_ratio = sqrt(abs(dot(prediction, prediction)));
 	float signal_rate = lerp(moments.z, noise_ratio, learning_rate);
 	
 	float min_gain = saturate(0.0625 * covariance / (signal_rate + 1e-5));
 	float process_noise = clamp(signal_rate / learning_rate, min_gain, 1.0);
 	
-    if (!all(uv_previous > 0 && uv_previous < BUFFER_SCREEN_SIZE) || is_dissoclusion)
+    if (!all(uv_previous > 0 && uv_previous < BUFFER_SCREEN_SIZE))
     {
-        signal_rate = 1; // Gets the new process_noise estimation on each dissoclusion event
+        signal_rate = 1;
     }
 	
 	value.x = lerp(moments.x, value.x, process_noise);
 	value.y = abs(prediction);
 	value.z = signal_rate;
-	value.w = depth;
+	value.w = 1;
+}
+
+float resample(sampler2D s, float2 uv)
+{      
+    float2 offset;
+
+    // each pixel receives a pure random and deterministic position within the sample
+    float dir = weyl_1d(uv * BUFFER_SCREEN_SIZE);
+    offset = weyl_2d(cos(dir / TAU)); 
+    offset = erfinv(offset * 2.0 - 1.0) * sqrt(2.0);
+
+    float a = tex2Dlod(s, float4(uv + float2( offset.x,  offset.y) * BUFFER_PIXEL_SIZE, 0, 0)).r;
+    float b = tex2Dlod(s, float4(uv + float2(-offset.x, -offset.y) * BUFFER_PIXEL_SIZE, 0, 0)).r;
+    float c = tex2Dlod(s, float4(uv,                                                    0, 0)).r;
+    float d = tex2Dlod(s, float4(uv + float2(-offset.y,  offset.x) * BUFFER_PIXEL_SIZE, 0, 0)).r;
+    float e = tex2Dlod(s, float4(uv + float2( offset.y, -offset.x) * BUFFER_PIXEL_SIZE, 0, 0)).r;
+
+    return (a + b + c + d + e) * 0.2;  
 }
 
 void guided_filtering(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
 {
     float4 v = 1.0;    
-    v.x = tex2Dsample(sRawOcclusion, texcoord);
+    v.x = resample(sRawOcclusion, texcoord);
     kalman_online(v, sRawOcclusion, texcoord);    
     output = v;
 }
@@ -466,12 +461,32 @@ void pack_history(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out flo
     data = tex2D(sReferanceOcclusion, texcoord);
 }
 
+float pow2(float x)
+{
+    return x * x;
+}
+
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
 {
     float3 color = tex2Dfetch(ReShade::BackBuffer, int2(vpos.xy), 0).rgb;
+    
+    float k = 0.0625, lambda = 0.5;
+    
+    float N = tex2D(sReferanceOcclusion, uv + float2(0.0, 1.5) * BUFFER_PIXEL_SIZE);
+    float S = tex2D(sReferanceOcclusion, uv - float2(0.0, 1.5) * BUFFER_PIXEL_SIZE);
+    float O = tex2D(sReferanceOcclusion, uv);
+    float E = tex2D(sReferanceOcclusion, uv + float2(1.5, 0.0) * BUFFER_PIXEL_SIZE);
+    float W = tex2D(sReferanceOcclusion, uv - float2(1.5, 0.0) * BUFFER_PIXEL_SIZE);
+    
+    float cN = exp(-pow2(abs(N - O)/k));
+    float cS = exp(-pow2(abs(S - O)/k));
+    float cE = exp(-pow2(abs(E - O)/k));
+    float cW = exp(-pow2(abs(W - O)/k));
+    
+    float occlusion = O + lambda * (cN*(N-O) + cS*(S-O) + cE*(E-O) + cW*(W-O));
 
     float fadefactor = get_fade_factor(uv);
-    float occlusion = lerp(tex2D(sReferanceOcclusion, uv).x, 1.0, fadefactor);
+    occlusion = lerp(occlusion, 1.0, fadefactor);
 
     color *= color;
     color = -log2(max(1e-6, 1.0 - color));
