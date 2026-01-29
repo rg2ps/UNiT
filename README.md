@@ -12,9 +12,13 @@ A modern screen-space ambient occlusion algorithm using analytic integration ove
 
 
 
+
+
 **Stothastic Filmic Grain: Fast Physically Correct Filmic Grain.**
 
 A fully physically based film grain model that operates on the principle of the Poisson distribution, which is the same principle that silver crystals in film emulsions obey.
+
+
 
 
 
@@ -24,9 +28,13 @@ Simulation of the real process of light diffusion using several new techniques, 
 
 
 
+
+
 **F-LLF: Fast Local Laplacian Filtering.**
 
 A visually correct implementation of the image local contrast enhancement algorithm based on the Fast Local Laplacian Filtering method, adapted for real-time usage.
+
+
 
 
 
@@ -36,9 +44,13 @@ Using continuous integration over the wavelength spectrum to obtain realistic pr
 
 
 
+
+
 **Frequency Sharpen: Frequency-Domain Detail Restoration Technique.**
 
 An image sharpening method that uses frequency transform principles to highly accurate restore detail and enhance overall image detailing without contrast changing and halos.
+
+
 
 
 
