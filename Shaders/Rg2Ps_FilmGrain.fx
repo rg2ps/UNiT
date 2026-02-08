@@ -1,13 +1,13 @@
 /*
    UNiT - Shader Library for ReShade.
-   Stochastic Filmic Grain via Poisson Distribution.
+   Stochastic Filmic Grain via Quasi-Continuent Poisson Integration
    
    Written for ReShade by RG2PS (c) 2026. Provided by EULA.
    Any file parts redistribution only with permission. All right reserved.
    Read the end-user license agreement to get more details.
 */
 
-uniform int _Fm
+uniform int _GrayFilm
 <
     ui_type = "combo";
     ui_items = "Default\0Monochrome\0";
@@ -87,15 +87,23 @@ float3 to_linear(float3 x)
     return lerp(x / 12.92, pow((x + 0.055)/(1.055), 2.4), step(0.04045, x));
 }
 
-float3 to_linear_fast(float3 x)
+float to_linear(float x)
 {
     return x * x * sign(x);
+}
+
+float erfinv(float x) 
+{
+    float lx = log((1.0f - x) * (1.0f + x));
+    float t1 = 2.0f / (3.14159265359f * 0.147f) + 0.5f * lx;
+    float t2 = 1.0f / (0.147f) * lx;
+    return sqrt(-t1 + sqrt(t1 * t1 - t2)) * sign(x);
 }
 
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
-uint lowbias32(uint x)
+uint hash32(uint x)
 {
     x ^= (x >> 16) | 1u; // don't hash zero, at least one bit
     x *= 0x7feb352du;
@@ -103,6 +111,11 @@ uint lowbias32(uint x)
     x *= 0x846ca68bu;
     x ^= x >> 16u;
     return x;
+}
+
+uint hash32(uint2 x)
+{
+    return hash32(hash32(x.y) + x.x);
 }
 
 uint lk_hash(uint x, uint n) 
@@ -116,31 +129,14 @@ uint lk_hash(uint x, uint n)
     return x;
 }
 
-uint lowbias32(uint2 x)
-{
-    return lowbias32(lowbias32(x.y) + x.x);
-}
-
-float rand_uniform(uint x, uint n) 
+float rand_uniform_0_1(uint x, uint n) 
 {
     return float(lk_hash(x, n)) * exp2(-32.0);
 }
 
-float continuum(float probability, float lambda)
+float rand_uniform_0_1(uint2 x) 
 {
-	// approximation of the continuous poisson quantities
-    float error = (1.0 + rsqrt(MAX_GREY_SCALE)) - sqrt(_Amount);
-    float part = min(error, probability % sqrt(lambda));
-    return max(0.0, part);
-}
-
-float erfinv(float x) 
-{
-    float lnx = log((1.0f - x) * (1.0f + x));
-    float tt1 = 2.0f / (3.14159265359f * 0.147f) + 0.5f * lnx;
-    float tt2 = 1.0f / (0.147f) * lnx;
-    float ndf = sqrt(-tt1 + sqrt(tt1 * tt1 - tt2)) * sign(x);
-    return clamp(ndf * sqrt(2.0), -0.99, 0.99);
+    return float(hash32(x)) * exp2(-32.0);
 }
 
 /*=============================================================================
@@ -156,7 +152,7 @@ void write_lut(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2
     float Hc = _Amount;
     float Hc2 = Hc * Hc;
 
-    float lambda = min((float)max_level, -log(1.0 - to_linear_fast(C_u)) * rsqrt(Hc));
+    float lambda = min(max_level, -log(1.0 - to_linear(C_u)) * rsqrt(Hc));
 
     // Poisson <-> Neg-Binomial
 	float Q = lambda / (sqrt(lambda) * (1.0 - Hc2) + Hc2);
@@ -164,46 +160,58 @@ void write_lut(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2
     output = float2(Q, exp(-Q));  
 }
 
+// Stirling's approximation of: √2 × λ^k * exp(-λ)/k!
+float factorial(int k, float l)
+{
+    return exp(k * log(l) - l - (k * log(k) - k + 0.5 * log(6.283185307 * k))) * 1.4142135623;
+}
+
+// Converts conditional intensity units to film developing value in [0, 1]
+float develop(float k = 8.0)
+{
+    return (exp2(_Amount * ((k / 2.0) - 1.0)) - exp2(-k * sqrt(_Amount))) / k;
+}
+
 void poisson_process(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
 {
     uint2 pos = uint2(vpos.xy);
     
     float3 color = tex2Dfetch(ReShade::BackBuffer, pos, 0).rgb; 
-    if (_Fm) color = gray3(color);
+    if (_GrayFilm) color = gray3(color);
     
-    uint seed = lowbias32(pos);
+    uint seed = hash32(pos);
     if (_Animate) seed += frameCount;
 
     float3 event = 0.0;
 
-    for (int j = 0; j < (_Fm ? 1 : 3); ++j) 
+    for (int i = 0; i < (_GrayFilm ? 1 : 3); ++i) 
     { 	
-	    float2 l = tex2Dlod(sLambdaLUT, float4(color[j], 0, 0, 0)).xy ;   
+	    float2 l = tex2Dlod(sLambdaLUT, float4(color[i], 0, 0, 0)).xy;   
 	    
-	    int trial = 0; // num of trials
- 	   float p = 1.0; // uniform prod	
- 	   uint L = 1;	// num of layers per trial
+	    int trial = 0;  // num of trials
+        int layer = 1;	// num of layers per trial
+ 	    float p = 1.0;  // uniform prod	
 
 	    [loop]
 	    do 
         {
-        	L += (j + 1) * 2;
+        	if (!_GrayFilm) layer += (i + 1) * 2;
+        	
 	        trial++;
-	        p *= rand_uniform(trial, seed + (_Fm ? 0 : reversebits(L)));
+	        p *= rand_uniform_0_1(trial, seed + reversebits(layer));
 	       
 	    } 
         while (p > l.y && trial < 255);
+
+        float continuum = factorial(trial, l.x);
         
-        if (!_Fm)
-	    	event[j] = float(trial - 1) - continuum(p, l.x);
+        if (!_GrayFilm)
+	    	event[i] = float(trial - 1) - continuum;
 	    else
-	    	event = float(trial - 1) - continuum(p, l.x);
+	    	event.xyz = float(trial - 1) - continuum;
     }
 
-    // back to sdr value
-    float3 poisson = min(1.25331414, event * sqrt(_Amount));
-    
-    output = float4(poisson, 1);
+    output = float4(event * sqrt(_Amount), 1);
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target)
@@ -219,16 +227,14 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
     [unroll]for(int j = -1; j <= 1; j++)
     {
         uint2 pos = uint2(vpos.xy) + uint2(i, j);
-        float seed = float(lowbias32(pos)) * exp2(-32.0);;
-        float ndf = erfinv(seed);
-
 	    float3 poisson = tex2Dfetch(sPoissonResult, pos, 0).rgb;
 
+        float seed = rand_uniform_0_1(pos);
+        float gaussian_ndf = erfinv(seed * 2.0 - 1.0);
+
 	    float sigma = rsqrt(2.0 * _Amount);
-        float x = length(float2(i, j) + ndf / (2.0 * sigma * sigma));
-	    float mu = 0.3465735903f - (sigma * sigma) * 0.5f;
-	    float u = (log(x) - mu) / sigma;
-        float weight = x > 0 ? exp(-0.5 * abs(u)) / (x * sigma * 2.50662827f) : 1;
+        float x = length(float2(i, j) + gaussian_ndf / (2.0 * sigma * sigma));
+        float weight = exp(-x * x);
         
 	    weight *= width[abs(i)] * width[abs(j)];
 
@@ -239,10 +245,9 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
     float3 color_poisson = sum / total;
     
     color = to_linear(color);
-       if (_Fm) color = gray3(color);
-    
-    
-    color = lerp(color, color_poisson, _Amount);  
+    if (_GrayFilm) color = gray3(color);
+
+    color = lerp(color, color_poisson, develop());  
 
     color = from_linear(color);
 
@@ -254,7 +259,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 /============================================================================*/
 technique UNiTFilmGrain < 
 ui_label = "UNiT: Film Grain";
-ui_tooltip = "                      		UNiT: Stochastic Film Grain \n\n" "________________________________________________________________________________________\n\n" "Physically based filmic grain model approach which operates on the poisson distribution\n" "for realistic simulation of the photo-emulsion process.\n\n" " - Developed by RG2PS - "; >
+ui_tooltip = "                      		UNiT: Stochastic Film Grain \n\n" "_____________________________________________________________________________________\n\n" "Physically based filmic grain model approach which operates on the continuum poisson\n" "integration for pure realistic simulation of the photo-emulsion process.\n\n" " - Developed by RG2PS - "; >
 {
 
     pass
