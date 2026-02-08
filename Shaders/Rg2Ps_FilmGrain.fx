@@ -7,26 +7,16 @@
    Read the end-user license agreement to get more details.
 */
 
-uniform int _Cm
-<
-    ui_type = "combo";
-    ui_items = "Colored\0White\0";
-    ui_label = "Grain Mode";
-    ui_category = "Global";
-> = 0;
-
 uniform int _Fm
 <
     ui_type = "combo";
     ui_items = "Default\0Monochrome\0";
     ui_label = "Film Mode";
-    ui_category = "Global";
 > = 0;
 
 uniform bool _Animate
 <
     ui_label = "Animate Grain";
-    ui_category = "Global";
     ui_type = "radio";
 > = false;
 
@@ -44,7 +34,7 @@ uniform float _Size
     ui_min = 0.1; ui_max = 1.0;
     ui_label = "Grain Size";
     ui_category = "Grain Processing";
-> = 0.85;
+> = 0.5;
 
 /*=============================================================================
 /   Buffer Samplers Definition
@@ -97,14 +87,9 @@ float3 to_linear(float3 x)
     return lerp(x / 12.92, pow((x + 0.055)/(1.055), 2.4), step(0.04045, x));
 }
 
-float3 from_hdr(float3 x)
+float3 to_linear_fast(float3 x)
 {
-    return saturate(1.1 * x * rsqrt(1 + x * x));
-}
-
-float3 to_hdr(float3 x)
-{
-   return min(16.0, 0.9090909 * x * rsqrt((1 - x * x) + 0.003921));
+    return x * x * sign(x);
 }
 
 /*=============================================================================
@@ -112,7 +97,7 @@ float3 to_hdr(float3 x)
 /============================================================================*/
 uint lowbias32(uint x)
 {
-    x ^= (x >> 16) | 1u;
+    x ^= (x >> 16) | 1u; // don't hash zero, at least one bit
     x *= 0x7feb352du;
     x ^= x >> 15u;
     x *= 0x846ca68bu;
@@ -131,20 +116,31 @@ uint lk_hash(uint x, uint n)
     return x;
 }
 
-uint3 to_next3u(uint h)
-{
-    // Optimized for quasi-random sequences, pure different word at each bit change.
-    return h * uint3(0xdb01bd51u, 0xdaef3c2cu, 0x75aeb75bu);
-}
-
-float qmc(uint x, uint n) 
-{
-    return float(lk_hash(reversebits(x), reversebits(n))) * exp2(-32.0);
-}
-
-uint lowbias_rng32(uint2 x)
+uint lowbias32(uint2 x)
 {
     return lowbias32(lowbias32(x.y) + x.x);
+}
+
+float rand_uniform(uint x, uint n) 
+{
+    return float(lk_hash(x, n)) * exp2(-32.0);
+}
+
+float continuum(float probability, float lambda)
+{
+	// approximation of the continuous poisson quantities
+    float error = (1.0 + rsqrt(MAX_GREY_SCALE)) - sqrt(_Amount);
+    float part = min(error, probability % sqrt(lambda));
+    return max(0.0, part);
+}
+
+float erfinv(float x) 
+{
+    float lnx = log((1.0f - x) * (1.0f + x));
+    float tt1 = 2.0f / (3.14159265359f * 0.147f) + 0.5f * lnx;
+    float tt2 = 1.0f / (0.147f) * lnx;
+    float ndf = sqrt(-tt1 + sqrt(tt1 * tt1 - tt2)) * sign(x);
+    return clamp(ndf * sqrt(2.0), -0.99, 0.99);
 }
 
 /*=============================================================================
@@ -156,63 +152,58 @@ void write_lut(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2
     int level = (int)(texcoord.x * max_level);
     float C_u = (float)level / max_level;
 
-    float Hc = _Amount; // grains density per pixel here
+ 	// Grains density per pixel here
+    float Hc = _Amount;
     float Hc2 = Hc * Hc;
 
-    float x = min((float)max_level, -log(1.0 - C_u * C_u * sign(C_u)) * rcp(Hc));
+    float lambda = min((float)max_level, -log(1.0 - to_linear_fast(C_u)) * rsqrt(Hc));
 
-    // For high λ, the grains should a clusterize approximately by √λ, that is approach a normal distribution
-    // This is necessary to correctly count n-th number of points (batches) at a one event
-    float lambda = x / (sqrt(x) * (1.0 - Hc2) + Hc2);
+    // Poisson <-> Neg-Binomial
+	float Q = lambda / (sqrt(lambda) * (1.0 - Hc2) + Hc2);
 
-    output = float2(lambda, exp(-lambda));  
+    output = float2(Q, exp(-Q));  
 }
 
 void poisson_process(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
 {
-    float3 color = tex2Dfetch(ReShade::BackBuffer, vpos.xy, 0).rgb; 
-
     uint2 pos = uint2(vpos.xy);
     
-    if (_Animate) 
-	{
-		pos |= ~frameCount * pos.x * pos.y;
-    }
+    float3 color = tex2Dfetch(ReShade::BackBuffer, pos, 0).rgb; 
+    if (_Fm) color = gray3(color);
+    
+    uint seed = lowbias32(pos);
+    if (_Animate) seed += frameCount;
 
     float3 event = 0.0;
 
-    [unroll]
-    for (int c = 0; c < 3; ++c) 
-    {
-        float exposure = color[c];
-
-	    float2 l = tex2Dlod(sLambdaLUT, float4(float2(exposure, 0.5), 0, 0)).xy;
- 	    float p = 1.0;
-	    int k = 0;
+    for (int j = 0; j < (_Fm ? 1 : 3); ++j) 
+    { 	
+	    float2 l = tex2Dlod(sLambdaLUT, float4(color[j], 0, 0, 0)).xy ;   
 	    
-        uint3 r = lowbias_rng32(pos).xxx;
-
-        if (!(_Fm || _Cm))
-        {
-            r = to_next3u(r);
-        }
+	    int trial = 0; // num of trials
+ 	   float p = 1.0; // uniform prod	
+ 	   uint L = 1;	// num of layers per trial
 
 	    [loop]
-	    do {
-	        k++;
-	        p *= qmc(uint(k), r[c]);
-	    } while (p >= l.y && k <= 255);
-
-		// The less clusters, the more counter integer..
-		float a3 = _Amount * _Amount * _Amount * 0.78539;
-		float cut = 1.0 - a3;
-        float k_fract = max(0, p % sqrt(l.x)) *  cut;
-	    event[c] = float(k-1) - k_fract;
+	    do 
+        {
+        	L += (j + 1) * 2;
+	        trial++;
+	        p *= rand_uniform(trial, seed + (_Fm ? 0 : reversebits(L)));
+	       
+	    } 
+        while (p > l.y && trial < 255);
+        
+        if (!_Fm)
+	    	event[j] = float(trial - 1) - continuum(p, l.x);
+	    else
+	    	event = float(trial - 1) - continuum(p, l.x);
     }
 
-    float3 color_poisson = event * _Amount;
-
-    output = float4(!_Fm ? color_poisson : gray3(color_poisson), 1);
+    // back to sdr value
+    float3 poisson = min(1.25331414, event * sqrt(_Amount));
+    
+    output = float4(poisson, 1);
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target)
@@ -228,16 +219,16 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
     [unroll]for(int j = -1; j <= 1; j++)
     {
         uint2 pos = uint2(vpos.xy) + uint2(i, j);
+        float seed = float(lowbias32(pos)) * exp2(-32.0);;
+        float ndf = erfinv(seed);
 
 	    float3 poisson = tex2Dfetch(sPoissonResult, pos, 0).rgb;
-        
-        float weight = 1.0;
 
-        float x = length(float2(i, j));
-	    float sigma = rsqrt(_Amount) * 0.785398;
+	    float sigma = rsqrt(2.0 * _Amount);
+        float x = length(float2(i, j) + ndf / (2.0 * sigma * sigma));
 	    float mu = 0.3465735903f - (sigma * sigma) * 0.5f;
 	    float u = (log(x) - mu) / sigma;
-        if (x != 0) weight = exp(-0.5 * u * u) / (x * sigma * 2.50662827f);
+        float weight = x > 0 ? exp(-0.5 * abs(u)) / (x * sigma * 2.50662827f) : 1;
         
 	    weight *= width[abs(i)] * width[abs(j)];
 
@@ -247,13 +238,13 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 
     float3 color_poisson = sum / total;
     
-    color = to_hdr(to_linear(color));
-
-    if (_Fm) color = gray3(color);
-
-    color = lerp(color, color_poisson, _Amount);  
+    color = to_linear(color);
+       if (_Fm) color = gray3(color);
     
-    color = from_linear(from_hdr(color));
+    
+    color = lerp(color, color_poisson, _Amount);  
+
+    color = from_linear(color);
 
     output = color;
 }
