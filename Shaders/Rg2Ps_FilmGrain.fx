@@ -131,7 +131,7 @@ uint lk_hash(uint x, uint n)
 
 float rand_uniform_0_1(uint x, uint n) 
 {
-    return float(lk_hash(reversebits(x), n)) * exp2(-32.0);
+    return float(lk_hash(x, n)) * exp2(-32.0);
 }
 
 float rand_uniform_0_1(uint2 x) 
