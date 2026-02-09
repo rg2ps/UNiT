@@ -165,7 +165,7 @@ void write_lut(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2
     output = float2(Q, exp(-Q));  
 }
 
-// Stirling's approximation of: √2 × λ^k * e(-λ)/k!
+// Stirling's approximation of: λ^k * e(-λ)/k!
 float factorial(int k, float l)
 {
     return exp(k * log(l) - l - (k * log(k) - k + 0.5 * log(6.283185307 * k)));
