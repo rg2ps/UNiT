@@ -131,12 +131,18 @@ uint lk_hash(uint x, uint n)
 
 float rand_uniform_0_1(uint x, uint n) 
 {
-    return float(lk_hash(x, n)) * exp2(-32.0);
+    return float(lk_hash(reversebits(x), n)) * exp2(-32.0);
 }
 
 float rand_uniform_0_1(uint2 x) 
 {
     return float(hash32(x)) * exp2(-32.0);
+}
+
+// Converts conditional intensity units to film developing value in [0, 1]
+float develop_scale(float k = 8.0)
+{
+    return (exp2(_Amount * ((k / 2.0) - 1.0)) - exp2(-k * sqrt(_Amount))) / k;
 }
 
 /*=============================================================================
@@ -146,10 +152,9 @@ void write_lut(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2
 {
     const int max_level = MAX_GREY_SCALE - 1;
     int level = (int)(texcoord.x * max_level);
-    float C_u = (float)level / max_level;
+    float C_u = (float)level / max_level; // exposure in [0, 1]
 
- 	// Grains density per pixel here
-    float Hc = _Amount;
+    float Hc = _Amount; // grain density per pixel here
     float Hc2 = Hc * Hc;
 
     float lambda = min(max_level, -log(1.0 - to_linear(C_u)) * rsqrt(Hc));
@@ -160,58 +165,55 @@ void write_lut(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2
     output = float2(Q, exp(-Q));  
 }
 
-// Stirling's approximation of: √2 × λ^k * exp(-λ)/k!
+// Stirling's approximation of: √2 × λ^k * e(-λ)/k!
 float factorial(int k, float l)
 {
     return exp(k * log(l) - l - (k * log(k) - k + 0.5 * log(6.283185307 * k))) * 1.4142135623;
 }
 
-// Converts conditional intensity units to film developing value in [0, 1]
-float develop(float k = 8.0)
+float gen_poisson(float2 lambda, uint seed, uint mip)
 {
-    return (exp2(_Amount * ((k / 2.0) - 1.0)) - exp2(-k * sqrt(_Amount))) / k;
+	int k = 0;      // num of trials
+    int n = 1;	    // num of layers per trial
+
+    float p = 1.0;
+
+	[loop]
+	do 
+    {
+        n += 2 * (mip + 1);
+	    k++;
+	    p *= rand_uniform_0_1(k, seed + reversebits(n));
+    } 
+    while (p > lambda.y && k < 255);
+
+    return float(k - 1) - factorial(k, lambda.x);
 }
 
-void poisson_process(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
+void monte_carlo(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
 {
     uint2 pos = uint2(vpos.xy);
-    
-    float3 color = tex2Dfetch(ReShade::BackBuffer, pos, 0).rgb; 
-    if (_GrayFilm) color = gray3(color);
     
     uint seed = hash32(pos);
     if (_Animate) seed += frameCount;
 
-    float3 event = 0.0;
+    float3 color = tex2Dfetch(ReShade::BackBuffer, pos, 0).rgb; 
 
-    for (int i = 0; i < (_GrayFilm ? 1 : 3); ++i) 
-    { 	
-	    float2 l = tex2Dlod(sLambdaLUT, float4(color[i], 0, 0, 0)).xy;   
-	    
-	    int trial = 0;  // num of trials
-        int layer = 1;	// num of layers per trial
- 	    float p = 1.0;  // uniform prod	
+    float3 poisson = 0.0;
 
-	    [loop]
-	    do 
-        {
-        	if (!_GrayFilm) layer += (i + 1) * 2;
-        	
-	        trial++;
-	        p *= rand_uniform_0_1(trial, seed + reversebits(layer));
-	       
-	    } 
-        while (p > l.y && trial < 255);
-
-        float continuum = factorial(trial, l.x);
-        
-        if (!_GrayFilm)
-	    	event[i] = float(trial - 1) - continuum;
-	    else
-	    	event.xyz = float(trial - 1) - continuum;
+    if (!_GrayFilm)
+    {
+        poisson.x = gen_poisson(tex2Dlod(sLambdaLUT, float4(color.x, 0, 0, 0)).xy, seed, 0);
+        poisson.y = gen_poisson(tex2Dlod(sLambdaLUT, float4(color.y, 0, 0, 0)).xy, seed, 1);
+        poisson.z = gen_poisson(tex2Dlod(sLambdaLUT, float4(color.z, 0, 0, 0)).xy, seed, 2);
+    }
+    else
+    {
+        float luma = gray3(color);
+        poisson = gen_poisson(tex2Dlod(sLambdaLUT, float4(luma, 0, 0, 0)).xy, seed, 0).xxx;
     }
 
-    output = float4(event * sqrt(_Amount), 1);
+    output = float4(poisson * sqrt(_Amount), 1.0);
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target)
@@ -247,7 +249,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
     color = to_linear(color);
     if (_GrayFilm) color = gray3(color);
 
-    color = lerp(color, color_poisson, develop());  
+    color = lerp(color, color_poisson, develop_scale());  
 
     color = from_linear(color);
 
@@ -272,7 +274,7 @@ ui_tooltip = "                      		UNiT: Stochastic Film Grain \n\n" "_______
     pass
     {
 	    VertexShader = PostProcessVS;
-	    PixelShader = poisson_process;
+	    PixelShader = monte_carlo;
 	    RenderTarget = texPoissonResult;
     }
 
