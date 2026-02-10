@@ -77,19 +77,14 @@ float gray3(float3 x)
     return dot(x, float3(0.2126729, 0.7151522, 0.072175));
 }
 
-float3 from_linear(float3 x)
-{
-    return lerp(12.92*x, 1.055 * pow(x, 0.4166666666666667) - 0.055, step(0.0031308, x));
-}
-
 float3 to_linear(float3 x)
 {
-    return lerp(x / 12.92, pow((x + 0.055)/(1.055), 2.4), step(0.04045, x));
+    return x * x * sign(x);
 }
 
-float to_linear(float x)
+float3 from_linear(float3 x)
 {
-    return x * x * sign(x);
+    return sqrt(abs(x)) * sign(x);
 }
 
 float erfinv(float x) 
@@ -181,7 +176,7 @@ float gen_poisson(float2 lambda, uint seed, uint mip)
 	[loop]
 	do 
     {
-        n += 2 * (mip + 1);
+        n += (31 - firstbithigh(mip * seed | 1)) * (1 << mip); 	// the some trick that correct models the colored halide clustering ^ ^
 	    k++;
 	    p *= rand_uniform_0_1(k, seed + reversebits(n));
     } 
@@ -236,7 +231,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 
 	    float sigma = rsqrt(2.0 * _Amount);
         float x = length(float2(i, j) + gaussian_ndf / (2.0 * sigma * sigma));
-        float weight = exp(-x * x);
+        float weight = exp(-sqrt(2.0) * x * x);
         
 	    weight *= width[abs(i)] * width[abs(j)];
 
