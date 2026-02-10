@@ -176,7 +176,8 @@ float gen_poisson(float2 lambda, uint seed, uint mip)
 	[loop]
 	do 
     {
-        n += (31 - firstbithigh(mip * seed | 1)) * (1 << mip); 	// the some trick that correct models the colored halide clustering ^ ^
+        n += 31 - firstbithigh(mip * seed | 1); // some trick that models the random colored points clustering ^ ^
+
 	    k++;
 	    p *= rand_uniform_0_1(k, seed + reversebits(n));
     } 
@@ -231,7 +232,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 
 	    float sigma = rsqrt(2.0 * _Amount);
         float x = length(float2(i, j) + gaussian_ndf / (2.0 * sigma * sigma));
-        float weight = exp(-sqrt(2.0) * x * x);
+        float weight = exp(-x * x);
         
 	    weight *= width[abs(i)] * width[abs(j)];
 
