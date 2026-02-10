@@ -176,7 +176,7 @@ float gen_poisson(float2 lambda, uint seed, uint mip)
 	[loop]
 	do 
     {
-        n += 31 - firstbithigh(mip * seed | 1); // some trick that models the random colored points clustering ^ ^
+        n += 31 - firstbithigh(mip * seed | 1); // some trick that models the random colored points clustering
 
 	    k++;
 	    p *= rand_uniform_0_1(k, seed + reversebits(n));
