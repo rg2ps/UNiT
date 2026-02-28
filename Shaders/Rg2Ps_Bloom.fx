@@ -1,6 +1,6 @@
 /*
    UNiT - Shader Library for ReShade.
-   Analytical Bloom via Gaussian-Guided Pyramidal Convolution
+   Analytical Bloom via Gaussian Pyramid Composition
    
    Written for ReShade by RG2PS (c) 2026. Provided by EULA.
    Any file parts redistribution only with permission. All right reserved.
@@ -11,42 +11,33 @@ uniform float _Intensity
 <
     ui_type = "drag";
     ui_label = "Bloom Intensity";
-    ui_category = "Global";
+    ui_category = "Globals";
     ui_min = 0.001; ui_max = 1.0;
 > = 0.5;
 
-uniform int _GamutMap
+uniform float _Radiance
 <
-    ui_type = "combo";
-    ui_items = "sRGB\0ACES-AP1\0";
-    ui_label = "Gamut Mapping";
-    ui_category = "Global";
-> = 1;
-
-uniform int _Radiance
-<
-    ui_label = "Bloom  Radiance";
+    ui_label = "Bloom Radiance";
     ui_type = "slider";
-    ui_category = "Bloom PDF Map";
-    ui_tooltip = "Increases the glow intensity from point light sources.";
-    ui_min = 0; ui_max = 16;
-> = 10;
+    ui_category = "Globals";
+    ui_min = 1.0; ui_max = 6.0;
+> = 4.0;
 
-uniform float _MaskAmount
+uniform float _UIMask
 <
     ui_type = "slider";
-    ui_label = "Depth Mask Strength";
-    ui_category = "Depth Mask";
+    ui_label = "Strength";
+    ui_category = "UI Mask";
     ui_min = 0.0; ui_max = 1.0;
 > = 0.0;
 
-uniform int _DepthMode
+uniform int _ZMode
 <
     ui_type = "combo";
     ui_items = "Default\0Inverse\0";
-    ui_label = "Game Depth Mode";
-    ui_tooltip = "Games can use alternative depth mode. Try inverse mode if depth mask don't work properly.";
-    ui_category = "Depth Mask";
+    ui_label = "Scene Depth Mode";
+    ui_tooltip = "Render can use alternative depth mode. Try inverse mode if UI mask don't work properly.";
+    ui_category = "UI Mask";
 > = 0;
 
 uniform bool _Debug
@@ -60,62 +51,43 @@ uniform bool _Debug
 /============================================================================*/
 #include "ReShade.fxh"
 
-texture2D texBloomMap		{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGBA16F; };
+#ifndef DITHER_BIT_DEPTH
+    #define DITHER_BIT_DEPTH 8
+#endif
 
-// Basic downsampling pass
-texture2D texBloomLevel0	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGBA16F; };
-texture2D texBloomLevel1	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGBA16F; };
-texture2D texBloomLevel2	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGBA16F; };
-texture2D texBloomLevel3	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGBA16F; };
-texture2D texBloomLevel4	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGBA16F; };
-texture2D texBloomLevel5	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = RGBA16F; };
-texture2D texBloomLevel6	{ Width = BUFFER_WIDTH >> 7; Height = BUFFER_HEIGHT >> 7; Format = RGBA16F; };
+#define DO_TEXTURE(N) texture2D texLowPassLevel##N { Width = BUFFER_WIDTH >> N + 1; Height = BUFFER_HEIGHT >> N + 1; Format = RGBA16F;  }; sampler sLowPassLevel##N { Texture = texLowPassLevel##N;  };  
 
-// Laplacian decomposing pass
-texture2D texFreqLevel0	    { Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGBA16F; };
-texture2D texFreqLevel1	    { Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGBA16F; };
-texture2D texFreqLevel2	    { Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGBA16F; };
-texture2D texFreqLevel3	    { Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGBA16F; };
-texture2D texFreqLevel4	    { Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGBA16F; };
-texture2D texFreqLevel5	    { Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 5; Format = RGBA16F; };
+DO_TEXTURE(0)
+DO_TEXTURE(1)
+DO_TEXTURE(2)
+DO_TEXTURE(3)
+DO_TEXTURE(4)
+DO_TEXTURE(5)
+DO_TEXTURE(6)
 
-// Pyramid reconstruction
-texture2D texSampledLevel0	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGBA16F; };
-texture2D texSampledLevel1	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGBA16F; };
-texture2D texSampledLevel2	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGBA16F; };
-texture2D texSampledLevel3	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGBA16F; };
-texture2D texSampledLevel4	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGBA16F; };
-texture2D texSampledLevel5	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = RGBA16F; };
-texture2D texSampledLevel6	{ Width = BUFFER_WIDTH >> 7; Height = BUFFER_HEIGHT >> 7; Format = RGBA16F; };
+texture2D texBloomMap		
+{ 
+    Width = BUFFER_WIDTH >> 1; 
+    Height = BUFFER_HEIGHT >> 1; 
+    Format = RGBA16F; 
+};
 
-// Render pyramid in half res-scale, It's doesn't affect quality much
-texture2D texBloomPyramid	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGBA16F; };
+sampler sBloomMap 
+{ 
+    Texture = texBloomMap; 
+};
 
-sampler sBloomMap		    { Texture = texBloomMap; };
+texture2D texBloomPyramid	
+{ 
+    Width = BUFFER_WIDTH; 
+    Height = BUFFER_HEIGHT; 
+    Format = RGBA16F; 
+};
 
-sampler sBloomLevel0		{ Texture = texBloomLevel0; };
-sampler sBloomLevel1		{ Texture = texBloomLevel1; };
-sampler sBloomLevel2		{ Texture = texBloomLevel2; };
-sampler sBloomLevel3		{ Texture = texBloomLevel3; };
-sampler sBloomLevel4		{ Texture = texBloomLevel4; };
-sampler sBloomLevel5		{ Texture = texBloomLevel5; };
-sampler sBloomLevel6		{ Texture = texBloomLevel6; };
-
-sampler sFreqLevel0	        { Texture = texFreqLevel0; };
-sampler sFreqLevel1	        { Texture = texFreqLevel1; };
-sampler sFreqLevel2	        { Texture = texFreqLevel2; };
-sampler sFreqLevel3	        { Texture = texFreqLevel3; };
-sampler sFreqLevel4	        { Texture = texFreqLevel4; };
-sampler sFreqLevel5	        { Texture = texFreqLevel5; };
-
-sampler sSampledLevel0	    { Texture = texSampledLevel0; };
-sampler sSampledLevel1	    { Texture = texSampledLevel1; };
-sampler sSampledLevel2	    { Texture = texSampledLevel2; };
-sampler sSampledLevel3	    { Texture = texSampledLevel3; };
-sampler sSampledLevel4	    { Texture = texSampledLevel4; };
-sampler sSampledLevel5	    { Texture = texSampledLevel5; };
-sampler sSampledLevel6	    { Texture = texSampledLevel6; };
-sampler sBloomPyramid	    { Texture = texBloomPyramid; MagFilter = LINEAR; MinFilter = LINEAR; MipFilter = LINEAR;};
+sampler sBloomPyramid	    
+{ 
+    Texture = texBloomPyramid; 
+};
 
 /*=============================================================================
 /   Global Helper Functions
@@ -127,22 +99,22 @@ float get_lin_depth(float2 uv)
 
 float3 to_linear(float3 x)
 {
-    return lerp(x / 12.92, pow((x + 0.055)/(1.055), 2.4), step(0.04045, x));
-}
-
-float3 to_linear_fast(float3 x)
-{
     return x * x;
 }
 
-float3 from_linear_fast(float3 x)
+float3 from_linear(float3 x)
 {
     return sqrt(x);
 }
 
+float grayscale(float3 x)
+{
+    return dot(x, float3(0.2126729, 0.7151522, 0.072175));
+}
+
 float3 from_hdr(float3 x) 
 {
-    return saturate(x * rsqrt(1 + x * x));
+    return x * rsqrt(1 + x * x);
 }
 
 float3 to_hdr(float3 x) 
@@ -150,32 +122,7 @@ float3 to_hdr(float3 x)
    return x * rsqrt(1 - x * x + 0.003921);
 }
 
-// sRGB <-> ACESAP1 w.o RRT/ODT
-float3 to_ap1(float3 x)
-{
-    float3x3 m = float3x3
-    (
-        0.613189, 0.339513, 0.047376,
-        0.070207, 0.916342, 0.013451, 
-        0.020618, 0.109573, 0.869609
-    );
-
-    return _GamutMap ? mul(m, x) : x;
-}
-
-float3 from_ap1(float3 x)
-{
-    float3x3 m = float3x3
-    (
-        1.705079, -0.621778, -0.083256,
-       -0.130257,  1.140804, -0.010548,
-       -0.024003, -0.128969,  1.152972
-    );
-
-    return _GamutMap ? mul(m, x) : x;
-}
-
-float weyl(float2 p)
+float rnd(float2 p)
 {
     return frac(0.5 + p.x * 0.7548776662467 + p.y * 0.569840290998);
 }
@@ -183,272 +130,183 @@ float weyl(float2 p)
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
-int get_effective_radius(float sigma)
-{
-   return (int)floor(3.141 * sigma - 0.318 / sigma);
-}
-
-float4 t2c(sampler2D s, float2 uv, float L) 
+float4 tex2Dscale(sampler2D s, float2 uv, float mip) 
 {   
-    float sigma = max(0.707106, sqrt(L * sqrt(2.0)));
-
-    float2 scale = BUFFER_PIXEL_SIZE * (1 << ((int)L + 1));
-
-    int k = get_effective_radius(sigma);
-
     float4 sum = 0.0;
     float total = 0.0;
 
-    for(int i = -k; i <= k; i++) 
-    for(int j = -k; j <= k; j++) 
+    float sigma = sqrt(2.0 * exp(mip));
+    float2 mip_texel = BUFFER_PIXEL_SIZE * exp2(mip + 1);
+
+    int k = (int)round(sigma);
+
+    for(int x = -k; x <= k; x++) 
+    for(int y = -k; y <= k; y++) 
     {
-	    float2 offset = float2(i, j);
-	    float2 pos = uv + offset * scale;
+	    float2 offset = float2(x, y);
+	    float2 tap_uv = uv + offset * mip_texel;
+        
+        float weight = exp(-dot(offset, offset) / sigma);
 
-        bool within_bounds = all(saturate(pos) == pos);
-
-	    float weight = exp(-dot(offset, offset) / (sigma * sigma * 2.0));
-        weight *= within_bounds;
-
-	    sum += tex2Dlod(s, float4(pos, 0, 0)) * weight;
+	    sum += tex2Dlod(s, float4(tap_uv, 0, 0)) * weight;
 	    total += weight;
     }
 
     return total > 0 ? sum / total : 0;
 }
 
-float4 t2s(sampler2D s, float2 uv, float L)
+float4 tex2Dsample(sampler2D s, float2 uv, float mip)
 {
-    float2 scale = BUFFER_PIXEL_SIZE * (1 << ((int)L));
-    
-    float wc = 0.41242;
-    float ws = 0.14684;
+    float2 tap = BUFFER_PIXEL_SIZE * exp2(mip + 1);
     
     float4 center = tex2Dlod(s, float4(uv, 0, 0));
     
-    float4 sides = 
-        tex2Dlod(s, float4(uv + float2(-scale.x, 0), 0, 0)) +
-        tex2Dlod(s, float4(uv + float2( scale.x, 0), 0, 0)) +
-        tex2Dlod(s, float4(uv + float2(0, -scale.y), 0, 0)) +
-        tex2Dlod(s, float4(uv + float2(0,  scale.y), 0, 0));
+    float4 cross = 
+        tex2Dlod(s, float4(uv + float2(-tap.x, 0), 0, 0)) +
+        tex2Dlod(s, float4(uv + float2( tap.x, 0), 0, 0)) +
+        tex2Dlod(s, float4(uv + float2(0, -tap.y), 0, 0)) +
+        tex2Dlod(s, float4(uv + float2(0,  tap.y), 0, 0));
     
-    return center * wc + sides * ws;
+    return center * 0.41242 + cross * 0.14684;
 }
 
-float4 facos_noclip(float4 x) 
+void depthmask(inout float3 x, float z0, float z1, float a)
 {
-    float4 v = abs(x);
-    float4 a = sqrt(1.0 - v) * (-0.16882 * v + 1.56734);
-    return x > 0.0 ? a : 3.14159 - a;
+    float v = saturate(exp2(-a * abs(z0 - z1) / z1 + 0.01));
+    x *= lerp(lerp(v, 1.0 - v * a, _ZMode), 1.0, 0.15);
+}
+
+void pixeldither(in float seed, inout float3 x)
+{
+    float bit_depth = exp2(DITHER_BIT_DEPTH) - 1;
+
+    float3 qu_min = floor(x * bit_depth) / bit_depth;
+    float3 qu_max = ceil(x * bit_depth) / bit_depth;
+
+    float3 error = saturate((x - qu_min) / (qu_max - qu_min));
+
+    x = lerp(qu_min, qu_max, step(seed, error));
 }
 
 /*=============================================================================
 /   Main Shader Workflow
 /============================================================================*/
+/*
+    Writes irradiance map for bloom propagation
+*/
 void pdf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
 {
-    float4 color, color_scale, intensity;
-	float3 probability;
+	float3 x = tex2D(ReShade::BackBuffer, texcoord).rgb;
+    
+    // Do the inverse power-heuristic s-curve here
+    float density = _Radiance * 6.28185;
+    float3 t = x.rgb * grayscale(x);
+    float3 phi = 1.0 - sqrt(cos(t));
+	float3 Q = (exp(phi * density) - 1.0) / density;
 
-    color = to_linear(t2s(ReShade::BackBuffer, texcoord, 0).rgb);
-    color.a = dot(color, float3(0.2126729, 0.7151522, 0.072175));
-	
-	color_scale = -log(1.0 - color);
-
-    float4 shoot = facos_noclip((1.0 - color) * 6.28318) * _Radiance * _Radiance; 
-
-    // To avoid force dynamic range compression, at simple use the NaN error to reset the value.
-    if (any(isnan(shoot)) || color.a >= 0.99) shoot = 0;
-	
-	intensity = (color_scale - color);
-
-    // something like: sqrt(irradiance) * absorption
-	probability = sqrt(shoot.rgb + intensity.rgb * intensity.a) * color.rgb;
-
-    output = float4(clamp(to_ap1(probability), 0.0, 65535.0), get_lin_depth(texcoord));
+    output = float4(Q, get_lin_depth(texcoord));
 }
 
+/*
+    Start the low-pass composing: L_k = (S_k ∘ S_[k-1] ∘ ... ∘ S₀)(P)
+*/
 void dl_0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = t2c(sBloomMap, texcoord, 0);
+    o = tex2Dscale(sBloomMap, texcoord, 0);
 }
 
 void dl_1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-   o = t2c(sBloomLevel0, texcoord, 1);
+   o = tex2Dscale(sLowPassLevel0, texcoord, 1);
 }
 
 void dl_2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = t2c(sBloomLevel1, texcoord, 2);
+    o = tex2Dscale(sLowPassLevel1, texcoord, 2);
 }
 
 void dl_3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = t2c(sBloomLevel2, texcoord, 3);
+    o = tex2Dscale(sLowPassLevel2, texcoord, 3);
 }
 
 void dl_4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = t2c(sBloomLevel3, texcoord, 4);
+    o = tex2Dscale(sLowPassLevel3, texcoord, 4);
 }
 
 void dl_5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = t2c(sBloomLevel4, texcoord, 5);
+    o = tex2Dscale(sLowPassLevel4, texcoord, 5);
 }
 
 void dl_6(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = t2c(sBloomLevel5, texcoord, 6);
+    o = tex2Dscale(sLowPassLevel5, texcoord, 6);
 }
 
-void fl_5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
-{
-    float4 a = tex2D(sBloomLevel5, texcoord);
-    float4 b = tex2D(sBloomLevel6, texcoord);
-
-    o = max(1e-5, a - b);
-}
-
-void fl_4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
-{
-    float4 a = tex2D(sBloomLevel4, texcoord);
-    float4 b = tex2D(sBloomLevel5, texcoord);
-
-    o = max(1e-5, a - b);
-}
-
-void fl_3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
-{
-    float4 a = tex2D(sBloomLevel3, texcoord);
-    float4 b = tex2D(sBloomLevel4, texcoord);
-
-    o = max(1e-5, a - b);
-}
-
-void fl_2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
-{
-    float4 a = tex2D(sBloomLevel2, texcoord);
-    float4 b = tex2D(sBloomLevel3, texcoord);
-
-    o = max(1e-5, a - b);
-}
-
-void fl_1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
-{
-    float4 a = tex2D(sBloomLevel1, texcoord);
-    float4 b = tex2D(sBloomLevel2, texcoord);
-
-    o = max(1e-5, a - b);
-}
-
-void fl_0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
-{
-    float4 a = tex2D(sBloomLevel0, texcoord);
-    float4 b = tex2D(sBloomLevel1, texcoord);
-
-    o = max(1e-5, a - b);
-}
-
-void ul_6(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
-{
-    o = t2c(sBloomLevel6, texcoord, 6);
-}
-
+/*
+    End of composing, start the upsampling: { L_k + R_[k] .. G_k + H_[k] }
+*/
 void ul_5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    float4 a = t2s(sBloomLevel5, texcoord, 5);
-    float4 b = tex2D(sSampledLevel6, texcoord);
-
-    o = (a + b) / 2.0;
+    o = tex2Dsample(sLowPassLevel6, texcoord, 6);
 }
 
 void ul_4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    float4 a = t2s(sBloomLevel4, texcoord, 4);
-    float4 b = tex2D(sSampledLevel5, texcoord);
-
-    o = (a + b) / 2.0;
+    o = tex2Dsample(sLowPassLevel5, texcoord, 5);
 }
 
 void ul_3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    float4 a = t2s(sBloomLevel3, texcoord, 3);
-    float4 b = tex2D(sSampledLevel4, texcoord);
-
-    o = (a + b) / 2.0;
+    o = tex2Dsample(sLowPassLevel4, texcoord, 4);
 }
 
 void ul_2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    float4 a = t2s(sBloomLevel2, texcoord, 2);
-    float4 b = tex2D(sFreqLevel3, texcoord);
-
-    o = a + b;
+    o = tex2Dsample(sLowPassLevel3, texcoord, 3);
 }
 
 void ul_1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    float4 a = t2s(sBloomLevel1, texcoord, 1);
-    float4 b = tex2D(sFreqLevel2, texcoord);
-
-    o = a + b;
+    o = tex2Dsample(sLowPassLevel2, texcoord, 2);
 }
 
 void ul_0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    float4 a = t2s(sBloomLevel0, texcoord, 0);
-    float4 b = tex2D(sFreqLevel1, texcoord);
-
-    o = a + b;
+    o = tex2Dsample(sLowPassLevel1, texcoord, 1);
 }
 
 void reconstruct(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
 {
-    // weights are optimized to ensure pyramid quasi-continuity
     output = 
-         t2s(sSampledLevel0, texcoord, 0) * 0.257126 +
-         t2s(sSampledLevel1, texcoord, 1) * 0.050901 +
-         t2s(sSampledLevel2, texcoord, 2) * 0.075099 +
-         t2s(sSampledLevel3, texcoord, 3) * 0.386931 +
-         t2s(sSampledLevel4, texcoord, 4) * 0.167947 +
-         t2s(sSampledLevel5, texcoord, 5) * 0.039476 +
-         t2s(sSampledLevel6, texcoord, 6) * 0.022469;
-}
-
-void get_depth_mask(inout float3 bloom, float d_avg, float d_center)
-{
-    float range = abs(d_avg - d_center) / d_center + 0.01;
-    float m = saturate(exp2(-_MaskAmount * range));
-    m = lerp(m, 1.0 - m * _MaskAmount, _DepthMode);
-    bloom *= lerp(m, 1, 0.15);
+        0.25*tex2D(sLowPassLevel0, texcoord) * 0.285714 +
+        0.25*tex2D(sLowPassLevel1, texcoord) * 0.238095 +
+        0.25*tex2D(sLowPassLevel2, texcoord) * 0.190476 +
+        0.25*tex2D(sLowPassLevel3, texcoord) * 0.142857 +
+        0.25*tex2D(sLowPassLevel4, texcoord) * 0.095238 +
+        0.25*tex2D(sLowPassLevel5, texcoord) * 0.047619;
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target)
 {
-    float4 bloom = tex2D(sBloomPyramid, texcoord);
-    float depth = get_lin_depth(texcoord);
-
-    get_depth_mask(bloom.rgb, bloom.w, depth);
-
     float3 color = tex2D(ReShade::BackBuffer, texcoord).xyz;
+    float4 bloom = tex2D(sBloomPyramid, texcoord);
+
+    depthmask(bloom.rgb, bloom.w, get_lin_depth(texcoord), _UIMask);
     
-    color = to_ap1(to_linear_fast(color));
+    color = to_linear(color);
 
     color = to_hdr(color);
     color += bloom.rgb * _Intensity;
     color = from_hdr(color);
 
-    color = from_linear_fast(from_ap1(color));
+    color = from_linear(color);
 
-    // 8 bit-size
-    float3 mn = floor(color * 255.0) / 255.0;
-    float3 mx = ceil(color * 255.0) / 255.0;
-    float3 err = saturate((color - mn) / (mx - mn));
-    color = lerp(mn, mx, step(weyl(vpos.xy), err));
+    pixeldither(rnd(vpos.xy), color);
 
-    output = _Debug ? from_linear_fast(from_hdr(bloom * _Intensity)) : color;
+    output = _Debug ? from_linear(from_hdr(bloom * _Intensity)) : color;
 }
 
 /*=============================================================================
@@ -459,52 +317,25 @@ technique UNiTLumi
 ui_label = "UNiT: Lumi-Bloom";
 ui_tooltip = "                                  UNiT: Lumi-Bloom \n\n" "__________________________________________________________________________________________\n\n" "Lumi is the physically inspired bloom shader which simulate the realistic light diffusion.\n\n" " - Developed by RG2PS - "; >
 {
-    pass
-    {
-	    VertexShader = PostProcessVS;
-	    PixelShader = pdf_map;
-	    RenderTarget = texBloomMap;
-    }
-
-    #define PROCESS_DOWNSAMPLE(i) pass { VertexShader = PostProcessVS; PixelShader = dl_##i; RenderTarget = texBloomLevel##i; }
-
-    PROCESS_DOWNSAMPLE(0)
-    PROCESS_DOWNSAMPLE(1)
-    PROCESS_DOWNSAMPLE(2)
-    PROCESS_DOWNSAMPLE(3)
-    PROCESS_DOWNSAMPLE(4)
-    PROCESS_DOWNSAMPLE(5)
-    PROCESS_DOWNSAMPLE(6)
-
-    #define PROCESS_LAPLACIAN(i) pass { VertexShader = PostProcessVS; PixelShader = fl_##i; RenderTarget = texFreqLevel##i; }
-
-    PROCESS_LAPLACIAN(0)
-    PROCESS_LAPLACIAN(1)
-    PROCESS_LAPLACIAN(2)
-    PROCESS_LAPLACIAN(3)
-    PROCESS_LAPLACIAN(4)
-    PROCESS_LAPLACIAN(5)
-
-    #define PROCESS_UPSAMPLE(i) pass { VertexShader = PostProcessVS; PixelShader = ul_##i; RenderTarget = texSampledLevel##i;}
-
-    PROCESS_UPSAMPLE(0)
-    PROCESS_UPSAMPLE(1)
-    PROCESS_UPSAMPLE(2)
-    PROCESS_UPSAMPLE(3)
-    PROCESS_UPSAMPLE(4)
-    PROCESS_UPSAMPLE(5)
-    PROCESS_UPSAMPLE(6)
-
-    pass
-    {
-	    VertexShader = PostProcessVS;
-	    PixelShader = reconstruct;
-	    RenderTarget = texBloomPyramid;
-    }
-
-    pass
-    {
-	    VertexShader = PostProcessVS;
-	    PixelShader = main;
-    }
+    // <>
+    pass { VertexShader = PostProcessVS; PixelShader = pdf_map; RenderTarget = texBloomMap; }
+    // <>
+    pass { VertexShader = PostProcessVS; PixelShader = dl_0; RenderTarget = texLowPassLevel0; }
+    pass { VertexShader = PostProcessVS; PixelShader = dl_1; RenderTarget = texLowPassLevel1; }
+    pass { VertexShader = PostProcessVS; PixelShader = dl_2; RenderTarget = texLowPassLevel2; }
+    pass { VertexShader = PostProcessVS; PixelShader = dl_3; RenderTarget = texLowPassLevel3; }
+    pass { VertexShader = PostProcessVS; PixelShader = dl_4; RenderTarget = texLowPassLevel4; }
+    pass { VertexShader = PostProcessVS; PixelShader = dl_5; RenderTarget = texLowPassLevel5; }
+    pass { VertexShader = PostProcessVS; PixelShader = dl_6; RenderTarget = texLowPassLevel6; }
+    // <>
+    pass { VertexShader = PostProcessVS; PixelShader = ul_5; RenderTarget = texLowPassLevel5; BlendEnable = true; BlendOp = ADD; SrcBlend = ONE; DestBlend = ONE; }
+    pass { VertexShader = PostProcessVS; PixelShader = ul_4; RenderTarget = texLowPassLevel4; BlendEnable = true; BlendOp = ADD; SrcBlend = ONE; DestBlend = ONE; }
+    pass { VertexShader = PostProcessVS; PixelShader = ul_3; RenderTarget = texLowPassLevel3; BlendEnable = true; BlendOp = ADD; SrcBlend = ONE; DestBlend = ONE; }
+    pass { VertexShader = PostProcessVS; PixelShader = ul_2; RenderTarget = texLowPassLevel2; BlendEnable = true; BlendOp = ADD; SrcBlend = ONE; DestBlend = ONE; }
+    pass { VertexShader = PostProcessVS; PixelShader = ul_1; RenderTarget = texLowPassLevel1; BlendEnable = true; BlendOp = ADD; SrcBlend = ONE; DestBlend = ONE; }
+    pass { VertexShader = PostProcessVS; PixelShader = ul_0; RenderTarget = texLowPassLevel0; BlendEnable = true; BlendOp = ADD; SrcBlend = ONE; DestBlend = ONE; }
+    // <>
+    pass { VertexShader = PostProcessVS; PixelShader = reconstruct; RenderTarget = texBloomPyramid; }
+    // <>
+    pass { VertexShader = PostProcessVS; PixelShader = main; }
 }

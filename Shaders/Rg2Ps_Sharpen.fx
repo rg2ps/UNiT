@@ -119,20 +119,20 @@ float l_eigenvalue(float2 xy, in block dct)
     int local_x = int(xy.x) % dct.tile_size;
     int local_y = int(xy.y) % dct.tile_size;
     
-    // frequency domain approximation of the laplacian eigenvalue
-    // souce: https://www.shadertoy.com/view/MctyD8
+    // frequency domain approximation of the laplacian eigenvalue: https://www.shadertoy.com/view/MctyD8
     float lx = sin(PI * float(local_x) / (2.0 * float(dct.tile_size)));
     lx = 4.0 * lx * lx;
     
     float ly = sin(PI * float(local_y) / (2.0 * float(dct.tile_size)));
     ly = 4.0 * ly * ly; 
     
-    // using the radial deviation to better frequency estimation and reduce shitty tiling
+    // usage the radial deviation smooths tile bounds
     float fx = float(local_x) / float(dct.tile_size - 1);
     float fy = float(local_y) / float(dct.tile_size - 1);
-    float r_xy = sqrt(fx * fx + fy * fy);
+
+    float rxy = sqrt(fx * fx + fy * fy);
     
-    return ((lx + ly) - r_xy) * r_xy * sqrt(2.0); 
+    return ((lx + ly) - rxy) * rxy * sqrt(2.0); 
 }
 
 float3 dct_IIe_row(sampler2D s, float2 xy)
@@ -266,7 +266,7 @@ float3 dct_IIIe_col(sampler2D s, float2 xy)
     return a;
 }
 
-// shader entry points start. spatial > II > freq > III > spatial
+// Shader entry points start: spatial -> II -> frequency -> III -> spatial
 void dct_II_H(float4 vpos : SV_Position, out float4 output : SV_Target)
 {
     output = float4(dct_IIe_row(sChannelColor, vpos.xy), 1.0);
@@ -287,26 +287,32 @@ void dct_III_V(float4 vpos : SV_Position, out float4 output : SV_Target)
     output = float4(dct_IIIe_col(sDCT_III_H, vpos.xy), 1.0);
 }
 
+float3 get_laplacian(float3 a, float3 b)
+{
+    float3 gaussian = a - b;
+
+    // Just an non-linear laplacian remapping function
+    float3 x = cos(1.0 - gaussian * PI);
+    float3 y = min(rsqrt(abs(gaussian)), 4.0 * PI);
+    float3 window = x * y;
+
+    return clamp(gaussian * window, -0.1125, 0.1125);
+}
+
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
 {
-    // now standard laplacian transform in spatial domain..
-    float3 color = tex2Dfetch(sChannelColor, vpos.xy, 0).rgb;
-    float3 color_diffuse = max(0, tex2Dfetch(sDCT_III_V, vpos.xy, 0).rgb);
+    // now the standard laplacian transform in spatial domain
+    float3 L_0 = tex2Dfetch(sChannelColor, vpos.xy, 0).rgb;
+    float3 L_1 = tex2Dfetch(sDCT_III_V, vpos.xy, 0).rgb;
+
+    L_1 = max(0.0, L_1); // avoid negs
     
-    // for laplacian transform better to use the gamma space
-    color = fl(color);
-    color_diffuse = fl(color_diffuse);
+    L_0 = fl(L_0);
+    L_1 = fl(L_1);
 
-    const float x = 4.0 * PI;
-    const float xr = rsqrt(0.5 * x * x);
-
-    float3 delta = color_diffuse - color;
-    float3 amplitude = min(x, rsqrt(abs(delta))) * cos(1.0 - delta * PI);
-	float3 color_delta = delta * amplitude; 
-
-	color_delta = clamp(color_delta, -xr, xr);
+    float3 G_1 = get_laplacian(L_1, L_0);
 	
-    output = _Debug ? dot(tl(color_delta), 1) * 6.0 : tl(color - color_delta * sqrt(_Amount));
+    output = _Debug ? dot(tl(G_1), 1) * 6.0 : tl(L_0 - G_1 * sqrt(_Amount));
 }
 
 /*=============================================================================

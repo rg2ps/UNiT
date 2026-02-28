@@ -7,26 +7,19 @@
    Read the end-user license agreement to get more details.
 */
 
-uniform float _Curvature
+uniform float S
 <
     ui_label = "Curvature";
     ui_type = "slider";
     ui_min = -1.0; ui_max = 1.0;
 > = 0.5;
 
-uniform float _Amount
+uniform float CA
 <
     ui_label = "Strength";
     ui_type = "slider";
     ui_min = -1.0; ui_max = 1.0;
-> = -0.25;
-
-uniform bool _GamutMap
-<
-    ui_type = "radio";
-    ui_label = "DCI-P3 CA";
-    ui_tooltip = "Using a wider color gamut to achieve a more vibrant effect";
-> = false;
+> = 0.25;
 
 /*=============================================================================
 /   Buffer Samplers Definition
@@ -36,6 +29,10 @@ uniform bool _GamutMap
 #ifndef MAX_SEGMENTS
     #define MAX_SEGMENTS 24
 #endif 
+
+// Hardcoded, for better don't touch it
+#define LUT_SIZE 1024
+#define LUT_SEGMENTS 8
 
 texture texHDRChannel
 {
@@ -51,7 +48,7 @@ sampler sHDRChannel
 
 texture texCMFLUT < source ="cmf_lut.png" ; >
 {
-    Width = 1024; 
+    Width = LUT_SIZE; 
     Height = 1; 
     Format = RGBA8;
 };
@@ -76,9 +73,14 @@ sampler sPrismMarch
 /*=============================================================================
 /   Global Helper Functions
 /============================================================================*/
+float3 safesqrt(float3 x)
+{
+    return sqrt(abs(x));
+}
+
 float3 from_linear(float3 x)
 {
-    return sqrt(x);
+    return safesqrt(x) * sign(x);
 }
 
 float3 to_linear(float3 x)
@@ -86,39 +88,14 @@ float3 to_linear(float3 x)
     return x * x;
 }
 
-// aces curve and inverse of it
 float3 from_hdr(float3 x)
 {
-    return saturate((x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f));
+    return x * rsqrt(1.0 + x * x);
 }
 
 float3 to_hdr(float3 x)
 {
-   return max((-0.59f * x + 0.03f - sqrt(-1.0127f * x*x + 1.3702f * x + 0.0009f)) / (2.0f * (2.43f*x - 2.51f)), 1e-6f);
-}
-
-float3 to_dcip3(float3 x)
-{
-    float3x3 m = float3x3
-    (
-        0.822461969,  0.033194199,  0.017082631,
-        0.177538031,  0.966805801, -0.009801631,
-        0.000000000,  0.000000000,  0.992718000
-    );
-
-    return _GamutMap ? mul(x, m) : x;
-}
-
-float3 from_dcip3(float3 x)
-{
-    float3x3 m = float3x3
-    (
-        1.224940063, -0.042056965, -0.019637167,
-       -0.224940063,  1.042056965,  0.019637167,
-        0.000000000,  0.000000000,  1.007320000
-    );
-
-    return _GamutMap ? mul(x, m) : x;
+   return x * rsqrt(1.0 - x * x + (1.0 / 255.0));
 }
 
 /*=============================================================================
@@ -126,7 +103,8 @@ float3 from_dcip3(float3 x)
 /============================================================================*/
 void write_hdr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
 {
-    output = float4(to_hdr(to_linear(tex2D(ReShade::BackBuffer, texcoord).rgb)), 1.0);
+    float3 sdr = tex2D(ReShade::BackBuffer, texcoord).rgb;
+    output = float4(to_hdr(to_linear(sdr)), 1.0);
 }
 
 void get_optical_distance(inout float lambda, in float r)
@@ -134,28 +112,28 @@ void get_optical_distance(inout float lambda, in float r)
     // forward and inner angle of incidence of a ray on the lens
     float a1 = atan(r); // [0 - π/2]
     float a2 = 1.570796326 - a1; // [π/2 - 0]
-    float theta = lerp(a2, a1, _Curvature * 0.5 + 0.5);   
+    float theta = lerp(a2, a1, S * 0.5 + 0.5);   
     lambda = theta * (lambda - 0.4) * 0.15;
 }
 
-void ray_tap(out float2 direction, in float2 coord, in float lambda, in float T)
+void ray_tap(out float2 direction, in float2 coord, in float lambda, in float mult)
 {
     float2 uv = coord * 2.0 - 1.0;
-    float r = length(uv);
+    float radius = length(uv);
 
-    get_optical_distance(lambda, r);
+    get_optical_distance(lambda, radius);
 
-    float step_length = _Amount * T;
-    float2 ray_tap = uv * lambda * step_length;
+    float step = CA * mult;
+    float2 tap = uv * lambda * step;
 
-    direction = (uv - ray_tap) * 0.5 + 0.5;
+    direction = (uv + tap) * 0.5 + 0.5;
 }
 
+// the lut requires at least 8 color segments per pixel
 int get_samplecount()
 {
-    float M = 0.125; // The LUT requires at least 8 segments per pixel
-    float v = M + sqrt(abs(_Amount)) * (rcp(MAX_SEGMENTS) - M);
-    return (int)ceil(1/v);
+    float a = rcp(LUT_SEGMENTS), b = rcp(MAX_SEGMENTS);
+    return (int)ceil(rcp(a + (b - a) * safesqrt(CA)));
 }
 
 void prism_integral(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
@@ -170,47 +148,35 @@ void prism_integral(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out f
     for (int i = 0; i < _sample; i++)
     {
         float lambda = (float(i) + 0.5f) / float(_sample);
-
-	    float2 pos;
-        ray_tap(pos, texcoord, lambda, 1);
+	    float2 pos; ray_tap(pos, texcoord, lambda, 1);
 	
-	    float3 color = to_dcip3(tex2Dlod(sHDRChannel, float4(pos, 0, 0)).rgb);
-        float3 weight = tex2Dfetch(sCMFLUT, int2(lambda * 1023.0, 0), 0).rgb * step;
+	    float3 color = tex2Dlod(sHDRChannel, float4(pos, 0, 0)).rgb;
+        float3 weight = tex2Dfetch(sCMFLUT, int2(lambda * (LUT_SIZE - 1), 0), 0).rgb * step;
 
 	    sum += color * weight;
 	    total += weight;
     }
 
-    const int _refiement = 8;
-
-    float2 local_div[_refiement];
-
-    for (int i = 0; i < _refiement; i++)
-    {
-        float lambda = (float(i) + 0.5f) / float(_refiement);
-        float2 pos;
-        ray_tap(pos, texcoord, lambda, 1);
-        local_div[i] = pos;
-    }
-
+    float2 local_div[LUT_SEGMENTS];
     float2 mean_div = 0;
 
-    [unroll]
-    for (int i = 0; i < _refiement; i++)
+    for (int i = 0; i < LUT_SEGMENTS; i++)
     {
+        float lambda = (float(i) + 0.5f) / float(LUT_SEGMENTS);
+        ray_tap(local_div[i], texcoord, lambda, 1);
         mean_div += local_div[i];
     }
 
-    mean_div /= float(_refiement);
-    
+    mean_div /= float(LUT_SEGMENTS);
+
     float divergence = 0;
 
-    for (int i = 0; i < _refiement; i++)
+    for (int i = 0; i < LUT_SEGMENTS; i++)
     {
         divergence = max(divergence, length(local_div[i] - mean_div));
     }
     
-    output = float4(sum / total, sqrt(divergence));
+    output = float4(from_hdr(sum / total), sqrt(divergence));
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target0)
@@ -226,9 +192,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
     for(int i = 0; i < 9; i++)
     {
         float lambda = (float(i) + 0.5f) / 9.0;
-
-	    float2 pos;
-        ray_tap(pos, texcoord, lambda, divergence);
+	    float2 pos; ray_tap(pos, texcoord, lambda, divergence);
 
 	    float3 color = tex2Dlod(sPrismMarch, float4(pos, 0, 0)).rgb;
         
@@ -236,7 +200,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
         total += step;
     }
 
-    output = from_linear(from_dcip3(from_hdr(sum / total)));
+    output = from_linear(sum / total);
 }
 
 /*=============================================================================
