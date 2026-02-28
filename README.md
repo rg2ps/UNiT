@@ -13,19 +13,19 @@ A modern screen-space ambient occlusion algorithm using analytic integration ove
 A fully physically based film grain model that operates on the principle of the Poisson distribution, which is the same principle that silver crystals in film emulsions obey.
 
 
-### **Luminescence (Lumi-Bloom): Technically Advanced Lens Light Scattering**
+### **Luminescence Bloom: Cinematic Lens Light Scattering**
 ![Point Lights Show](./assets/images/bloom_img.jpg)
-Simulation of the real process of light diffusion using several new techniques, which gives a pure-natural glow from point lights.
+Simulation of the light diffusion at lens. At simple that's a bloom which gives a pure-natural glow from point lights.
 
 
 ### **F-LLF: Fast Local Laplacian Filtering**
 ![LLF Comparison (Off/On)](./assets/images/llf_img.jpg)
-A visually correct implementation of the image local contrast enhancement algorithm based on the Fast Local Laplacian Filtering method, adapted for real-time usage.
+A implementation of the image enhancement algorithm based on the Fast Local Laplacian Filtering and adapted for real-time usage.
 
 
 ### **Spectral CA: Chromatic Aberration via Spectrum Integration**
 ![Prism Effect Showcase](./assets/images/prism_img.jpg)
-Simulating of the realistic prism dispersion by using continuous spectrum integration over the wavelength.
+Simulating of the realistic prism dispersion by using continuous spectrum integration.
 
 
 ### **Frequency Sharpen: Frequency-Domain Detail Restoration Technique**
@@ -35,6 +35,7 @@ An image sharpening method that uses frequency transform principles to highly ac
 <br>
 
 Copyright (c) RG2PS. All Right Reserved.
+
 
 
 
