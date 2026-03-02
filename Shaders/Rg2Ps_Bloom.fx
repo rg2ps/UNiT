@@ -13,15 +13,7 @@ uniform float _Intensity
     ui_label = "Bloom Intensity";
     ui_category = "Globals";
     ui_min = 0.001; ui_max = 1.0;
-> = 0.5;
-
-uniform float _Radiance
-<
-    ui_label = "Bloom Radiance";
-    ui_type = "slider";
-    ui_category = "Globals";
-    ui_min = 1.0; ui_max = 6.0;
-> = 4.0;
+> = 0.3;
 
 uniform float _UIMask
 <
@@ -42,7 +34,7 @@ uniform int _ZMode
 
 uniform bool _Debug
 <
-    ui_label = "Visualize Bloom";
+    ui_label = "Visualize Irradiance Map";
     ui_category = "Debug Mode";
 > = false;
 
@@ -97,16 +89,6 @@ float get_lin_depth(float2 uv)
     return ReShade::GetLinearizedDepth(uv);
 }
 
-float3 to_linear(float3 x)
-{
-    return x * x;
-}
-
-float3 from_linear(float3 x)
-{
-    return sqrt(x);
-}
-
 float grayscale(float3 x)
 {
     return dot(x, float3(0.2126729, 0.7151522, 0.072175));
@@ -114,12 +96,12 @@ float grayscale(float3 x)
 
 float3 from_hdr(float3 x) 
 {
-    return x * rsqrt(1 + x * x);
+    return x * rsqrt(1.0 + x * x);
 }
 
 float3 to_hdr(float3 x) 
 {
-   return x * rsqrt(1 - x * x + 0.003921);
+   return x * rsqrt(1.0 - x * x + rcp(255.0));
 }
 
 float rnd(float2 p)
@@ -135,13 +117,11 @@ float4 tex2Dscale(sampler2D s, float2 uv, float mip)
     float4 sum = 0.0;
     float total = 0.0;
 
-    float sigma = sqrt(2.0 * exp(mip));
+    float sigma = exp2(0.5 * mip + 1) * rsqrt(2.0);
     float2 mip_texel = BUFFER_PIXEL_SIZE * exp2(mip + 1);
 
-    int k = (int)round(sigma);
-
-    for(int x = -k; x <= k; x++) 
-    for(int y = -k; y <= k; y++) 
+    for(int x = -ceil(sigma); x <= ceil(sigma); x++) 
+    for(int y = -ceil(sigma); y <= ceil(sigma); y++) 
     {
 	    float2 offset = float2(x, y);
 	    float2 tap_uv = uv + offset * mip_texel;
@@ -191,20 +171,28 @@ void pixeldither(in float seed, inout float3 x)
 /*=============================================================================
 /   Main Shader Workflow
 /============================================================================*/
+float3 chromascale(float3 x)
+{
+    return max(0.0, (x * x) / grayscale(x));
+}
+
 /*
     Writes irradiance map for bloom propagation
 */
-void pdf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
+void pdf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target0)
 {
-	float3 x = tex2D(ReShade::BackBuffer, texcoord).rgb;
-    
-    // Do the inverse power-heuristic s-curve here
-    float density = _Radiance * 6.28185;
-    float3 t = x.rgb * grayscale(x);
-    float3 phi = 1.0 - sqrt(cos(t));
-	float3 Q = (exp(phi * density) - 1.0) / density;
+    float3 sdr = tex2Dsample(ReShade::BackBuffer, texcoord, -2).rgb;
+    float3 hdr = pow(sdr, 2.2);
 
-    output = float4(Q, get_lin_depth(texcoord));
+    const float gamma = 0.05;
+
+    // https://www.ipol.im/pub/art/2020/300/article.pdf
+    float3 v = saturate(grayscale(sdr)); 
+    float3 k = -(0.63662 - 0.63662*pow((1.0 - v) / 0.5, gamma)); 
+    float3 m = 255.0f / log10(abs(k) * 255.0 + 1.0);
+    float3 x = max(0.0, (255.0f - m) * (abs(k) * hdr));
+    
+    output = float4(chromascale(x), get_lin_depth(texcoord));
 }
 
 /*
@@ -281,32 +269,33 @@ void ul_0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : 
 void reconstruct(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
 {
     output = 
-        0.25*tex2D(sLowPassLevel0, texcoord) * 0.285714 +
-        0.25*tex2D(sLowPassLevel1, texcoord) * 0.238095 +
-        0.25*tex2D(sLowPassLevel2, texcoord) * 0.190476 +
-        0.25*tex2D(sLowPassLevel3, texcoord) * 0.142857 +
-        0.25*tex2D(sLowPassLevel4, texcoord) * 0.095238 +
-        0.25*tex2D(sLowPassLevel5, texcoord) * 0.047619;
+        tex2D(sLowPassLevel0, texcoord) * 0.285714 +
+        tex2D(sLowPassLevel1, texcoord) * 0.238095 +
+        tex2D(sLowPassLevel2, texcoord) * 0.190476 +
+        tex2D(sLowPassLevel3, texcoord) * 0.142857 +
+        tex2D(sLowPassLevel4, texcoord) * 0.095238 +
+        tex2D(sLowPassLevel5, texcoord) * 0.047619;
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target)
 {
     float3 color = tex2D(ReShade::BackBuffer, texcoord).xyz;
+    float3 oc = color;
     float4 bloom = tex2D(sBloomPyramid, texcoord);
 
     depthmask(bloom.rgb, bloom.w, get_lin_depth(texcoord), _UIMask);
     
-    color = to_linear(color);
+    color = pow(color, 2.2);
 
     color = to_hdr(color);
     color += bloom.rgb * _Intensity;
     color = from_hdr(color);
 
-    color = from_linear(color);
+    color = pow(color, rcp(2.2));
 
     pixeldither(rnd(vpos.xy), color);
 
-    output = _Debug ? from_linear(from_hdr(bloom * _Intensity)) : color;
+    output = _Debug ? sqrt(tex2D(sBloomMap, texcoord).rgb) : color;
 }
 
 /*=============================================================================
