@@ -26,9 +26,8 @@ uniform float _UIMask
 uniform int _ZMode
 <
     ui_type = "combo";
-    ui_items = "Default\0Inverse\0";
-    ui_label = "Scene Depth Mode";
-    ui_tooltip = "Render can use alternative depth mode. Try inverse mode if UI mask don't work properly.";
+    ui_items = "Forward\0Inverse\0";
+    ui_label = "UI Depth Mode";
     ui_category = "UI Mask";
 > = 0;
 
