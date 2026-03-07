@@ -3,16 +3,16 @@
    Adaptive Frequency Domain Image Detail Restoration via Spectral Diffusion
    Source: https://en.wikipedia.org/wiki/Discrete_cosine_transform
 
-   Sharpen in freq domain is really effective detail enhancement technique because by 
-   working with the full-scaled image we pure aproxximate continuous gaussian integral. 
-   Its allows us to cover the entire image and inseparably process each pixel.
+   Sharpening in frequency domain is really effective detail enhancement 
+   technique because by working with the full-scaled image we cover the entire 
+   image and inseparably process each pixel.
    
    Written for ReShade by RG2PS (c) 2026. Provided by EULA.
    Any file parts redistribution only with permission. All right reserved.
    Read the end-user license agreement to get more details.
 */
 
-uniform float _Amount
+uniform float A
 <
     ui_label = "Sharpen Strength";
     ui_type = "slider";
@@ -130,9 +130,9 @@ float l_eigenvalue(float2 xy, in block dct)
     float fx = float(local_x) / float(dct.tile_size - 1);
     float fy = float(local_y) / float(dct.tile_size - 1);
 
-    float rxy = sqrt(fx * fx + fy * fy);
+    float radial = sqrt(fx * fx + fy * fy);
     
-    return ((lx + ly) - rxy) * rxy * sqrt(2.0); 
+    return ((lx + ly) + radial) * radial; 
 }
 
 float3 dct_IIe_row(sampler2D s, float2 xy)
@@ -290,29 +290,26 @@ void dct_III_V(float4 vpos : SV_Position, out float4 output : SV_Target)
 float3 get_laplacian(float3 a, float3 b)
 {
     float3 gaussian = a - b;
+    float3 window = rsqrt(abs(gaussian) + 1e-3) * cos(1.0 - gaussian * PI);
 
     // Just an non-linear laplacian remapping function
-    float3 x = cos(1.0 - gaussian * PI);
-    float3 y = min(rsqrt(abs(gaussian)), 4.0 * PI);
-    float3 window = x * y;
-
-    return clamp(gaussian * window, -0.1125, 0.1125);
+    return clamp(gaussian * window, -0.125, 0.125) * sqrt(A); 
 }
 
+// now the standard laplacian transform in spatial domain
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
 {
-    // now the standard laplacian transform in spatial domain
-    float3 L_0 = tex2Dfetch(sChannelColor, vpos.xy, 0).rgb;
-    float3 L_1 = tex2Dfetch(sDCT_III_V, vpos.xy, 0).rgb;
+    float3 center = tex2Dfetch(sChannelColor, vpos.xy, 0).rgb;
+    float3 x = tex2Dfetch(sDCT_III_V, vpos.xy, 0).rgb;
 
-    L_1 = max(0.0, L_1); // avoid negs
+    x = max(0.0, x); // avoid negs
     
-    L_0 = fl(L_0);
-    L_1 = fl(L_1);
+    center = fl(center);
+    x = fl(x);
 
-    float3 G_1 = get_laplacian(L_1, L_0);
+    float3 laplacian = get_laplacian(x, center);
 	
-    output = _Debug ? dot(tl(G_1), 1) * 6.0 : tl(L_0 - G_1 * sqrt(_Amount));
+    output = _Debug ? dot(tl(laplacian), 1.0) * 6.0 : tl(center - laplacian);
 }
 
 /*=============================================================================
