@@ -116,8 +116,8 @@ float4 tex2Dscale(sampler2D s, float2 uv, float mip)
     float4 sum = 0.0;
     float total = 0.0;
 
-    float sigma = exp2(0.5 * mip + 1) * rsqrt(2.0);
-    float2 mip_texel = BUFFER_PIXEL_SIZE * exp2(mip + 1);
+    float sigma = exp2(0.5 * (mip + 1)) * rsqrt(2.0);
+    float2 mip_texel = BUFFER_PIXEL_SIZE * exp2(mip);
 
     for(int x = -ceil(sigma); x <= ceil(sigma); x++) 
     for(int y = -ceil(sigma); y <= ceil(sigma); y++) 
@@ -136,7 +136,7 @@ float4 tex2Dscale(sampler2D s, float2 uv, float mip)
 
 float4 tex2Dsample(sampler2D s, float2 uv, float mip)
 {
-    float2 tap = BUFFER_PIXEL_SIZE * exp2(mip + 1);
+    float2 tap = 1.5 * BUFFER_PIXEL_SIZE * exp2(mip);
     
     float4 center = tex2Dlod(s, float4(uv, 0, 0));
     
@@ -174,20 +174,19 @@ float3 chromascale(float3 x)
 {
     return max(0.0, (x * x) / grayscale(x));
 }
-
 /*
     Writes irradiance map for bloom propagation
 */
 void pdf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target0)
 {
-    float3 sdr = tex2Dsample(ReShade::BackBuffer, texcoord, -2).rgb;
+    float3 sdr = tex2D(ReShade::BackBuffer, texcoord).rgb;
     float3 hdr = pow(sdr, 2.2);
 
     const float gamma = 0.05;
 
     // https://www.ipol.im/pub/art/2020/300/article.pdf
     float3 v = saturate(grayscale(sdr)); 
-    float3 k = -(0.63662 - 0.63662*pow((1.0 - v) / 0.5, gamma)); 
+    float3 k = -(0.5 - 0.5*pow((1.0 - v) / 0.5, gamma)); 
     float3 m = 255.0f / log10(abs(k) * 255.0 + 1.0);
     float3 x = max(0.0, (255.0f - m) * (abs(k) * hdr));
     
@@ -199,37 +198,37 @@ void pdf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o
 */
 void dl_0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dscale(sBloomMap, texcoord, 0);
+    o = tex2Dscale(sBloomMap, texcoord, 1);
 }
 
 void dl_1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-   o = tex2Dscale(sLowPassLevel0, texcoord, 1);
+   o = tex2Dscale(sLowPassLevel0, texcoord, 2);
 }
 
 void dl_2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dscale(sLowPassLevel1, texcoord, 2);
+    o = tex2Dscale(sLowPassLevel1, texcoord, 3);
 }
 
 void dl_3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dscale(sLowPassLevel2, texcoord, 3);
+    o = tex2Dscale(sLowPassLevel2, texcoord, 4);
 }
 
 void dl_4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dscale(sLowPassLevel3, texcoord, 4);
+    o = tex2Dscale(sLowPassLevel3, texcoord, 5);
 }
 
 void dl_5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dscale(sLowPassLevel4, texcoord, 5);
+    o = tex2Dscale(sLowPassLevel4, texcoord, 6);
 }
 
 void dl_6(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dscale(sLowPassLevel5, texcoord, 6);
+    o = tex2Dscale(sLowPassLevel5, texcoord, 7);
 }
 
 /*
@@ -237,32 +236,32 @@ void dl_6(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : 
 */
 void ul_5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dsample(sLowPassLevel6, texcoord, 6);
+    o = tex2Dsample(sLowPassLevel6, texcoord, 7);
 }
 
 void ul_4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dsample(sLowPassLevel5, texcoord, 5);
+    o = tex2Dsample(sLowPassLevel5, texcoord, 6);
 }
 
 void ul_3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dsample(sLowPassLevel4, texcoord, 4);
+    o = tex2Dsample(sLowPassLevel4, texcoord, 5);
 }
 
 void ul_2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dsample(sLowPassLevel3, texcoord, 3);
+    o = tex2Dsample(sLowPassLevel3, texcoord, 4);
 }
 
 void ul_1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dsample(sLowPassLevel2, texcoord, 2);
+    o = tex2Dsample(sLowPassLevel2, texcoord, 3);
 }
 
 void ul_0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dsample(sLowPassLevel1, texcoord, 1);
+    o = tex2Dsample(sLowPassLevel1, texcoord, 2);
 }
 
 void reconstruct(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
@@ -294,7 +293,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 
     pixeldither(rnd(vpos.xy), color);
 
-    output = _Debug ? sqrt(tex2D(sBloomMap, texcoord).rgb) : color;
+    output = _Debug ? sqrt(bloom.rgb) : color;
 }
 
 /*=============================================================================
