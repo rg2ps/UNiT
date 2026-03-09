@@ -24,17 +24,17 @@ uniform float _FadeDist
     ui_max = 1.0f;
 > = 0.7;
 
-uniform float _LearningRate
+uniform float _Q
 <
     ui_label = "Temporal Filtering";
     ui_type = "drag";
     ui_min = 0.1f;
     ui_max = 0.9f;
-> = 0.5f;
+> = 0.75f;
 
-uniform bool _Debug
+uniform bool _Dm
 <
-    ui_label = "Enable Debug Mode";
+    ui_label = "Show Raw AO";
     ui_type = "radio";
 > = false;
 
@@ -43,7 +43,8 @@ uniform int _Zm
     ui_type = "combo";
     ui_items = "Default\0Inverse\0";
     ui_label = "Game Depth Mode";
-    ui_tooltip = "Games can use alternative depth mode. Turn inverse mode if shader don't work properly.";
+    ui_tooltip = "Renders can use alternative depth mode. Turn inverse mode if shader don't work properly.";
+    ui_category = "Scene Setup";
 > = 0;
 
 /*=============================================================================
@@ -51,8 +52,8 @@ uniform int _Zm
 /============================================================================*/
 #include "ReShade.fxh"
 
-#ifndef AO_RAYS_NUM
- #define AO_RAYS_NUM 4
+#ifndef VBAO_SLICE_NUM
+ #define VBAO_SLICE_NUM 4
 #endif 
 
 uniform int frameCount < source = "framecount"; >;
@@ -95,7 +96,7 @@ texture texReferanceOcclusion
 {
     Width = BUFFER_WIDTH; 
     Height = BUFFER_HEIGHT; 
-    Format = RGBA16F;
+    Format = RG16F;
 };
 
 sampler sReferanceOcclusion
@@ -107,7 +108,7 @@ texture texPackedHistory
 {
     Width = BUFFER_WIDTH; 
     Height = BUFFER_HEIGHT; 
-    Format = RGBA16F;
+    Format = RG16F;
 };
 
 sampler sPackedHistory
@@ -207,6 +208,11 @@ void write_gbuffer(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out fl
     output = float4(construct_normal(texcoord), get_ndc_depth(texcoord));
 }
 
+/*=============================================================================
+/   Workspace Helper Functions
+/============================================================================*/
+#define roundup(n, d) (int(n + d - 1) / int(d)) // ceil?
+
 float pow2(float x)
 {
     return x * x;
@@ -218,11 +224,6 @@ float2 facos(const float2 x)
     float2 a = sqrt(1.0 - v) * (-0.16882 * v + 1.56734);
     return x > 0.0 ? a : PI - a;
 }
-
-/*=============================================================================
-/   Workspace Helper Functions
-/============================================================================*/
-#define roundup(n, d) (int(n + d - 1) / int(d)) // ceil?
 
 float clip_to_majorbit(in float x)
 {
@@ -325,7 +326,7 @@ float tangent_horizon(float d_sq, float cos_h)
     float world_radius = _Radius * _Radius * BUFFER_WIDTH;
     float relative_radius = log2(view_pos.z + 1e-6);
     float radius = world_radius / relative_radius;
-    float step_size = max(AO_RAYS_NUM, radius) / AO_RAYS_NUM;
+    float step_size = max(VBAO_SLICE_NUM, radius) / VBAO_SLICE_NUM;
 
 	float2 h = -1.0;
 
@@ -335,7 +336,7 @@ float tangent_horizon(float d_sq, float cos_h)
 	float step_length = step_size;
 
 	[loop]
-	for (int slice = 0; slice < AO_RAYS_NUM; ++slice)
+	for (int slice = 0; slice < VBAO_SLICE_NUM; ++slice)
 	{
         float ray_seed = step_length * random + float(slice);
 	    float2 tap = slice_dir.xy * max(ray_seed, float(slice) + 1.0) * BUFFER_PIXEL_SIZE;
@@ -384,64 +385,55 @@ float tangent_horizon(float d_sq, float cos_h)
     
     float visibility = saturate(integrate_bitfield(h) * H_PI);
 
-    tex2Dstore(stRawOcclusion, id.xy, float4(1.0 - visibility, 1, 1, 1));
+    tex2Dstore(stRawOcclusion, id.xy, float4(1.0 - visibility, 1.0, 1.0, 1.0));
 }
 
-void kalman_online(inout float4 value, in sampler2D s, float2 uv)
+void variance_online(inout float2 value, float2 uv)
 {
 	float2 uv_previous = uv + tex2D(SamplerMotionVectors, uv).rg;
-	float4 moments = tex2D(sPackedHistory, uv_previous);
-	
-	const float learning_rate = _LearningRate;
-	
-	const float SIGMA = 0.0625;
-	
-    // a very lax approximation of kalman via moving average..
-	float prediction = value.x - moments.x;
-	float covariance = lerp(moments.y, prediction, learning_rate);
-	float noise_ratio = abs(prediction);
-	float signal_rate = lerp(moments.z, noise_ratio, learning_rate);
+	float2 moments = tex2D(sPackedHistory, uv_previous);
 
-	float min_gain = saturate(SIGMA * covariance / signal_rate);
-	float process_noise = clamp(signal_rate / learning_rate, min_gain, 1.0);
+	float pred = value.x - moments.x;
+	float cov_sq = (pred - moments.y) * (pred - moments.y);
+
+	float scale_dev = abs(pred);
+    float max_dev = saturate((scale_dev / _Q) + cov_sq);
 	
-    if (!all(uv_previous > 0 && uv_previous < BUFFER_SCREEN_SIZE))
-    {
-        signal_rate = 1;
-    }
+    if (!all(uv_previous > 0 && uv_previous < BUFFER_SCREEN_SIZE)) scale_dev = 1.0;
 	
-	value.x = lerp(moments.x, value.x, process_noise);
-	value.y = prediction;
-	value.z = signal_rate;
-	value.w = 1;
+	value.x = lerp(moments.x, value.x, max_dev);
+	value.y = pred;
 }
 
-float resample(sampler2D s, float2 uv)
+float resample(sampler2D s, float2 uv, float2 xy)
 {      
-    float direction = weyl_1d(uv * BUFFER_SCREEN_SIZE);
+    float direction = weyl_1d(uv * xy);
     float2 offset = weyl_2d(cos(direction / TAU));
+    
     float2 tap = erfinv(offset * 2.0 - 1.0) * sqrt(2.0);
 
-    float a = tex2Dlod(s, float4(uv + float2( tap.x,  tap.y) * BUFFER_PIXEL_SIZE, 0, 0));
-    float b = tex2Dlod(s, float4(uv + float2(-tap.x, -tap.y) * BUFFER_PIXEL_SIZE, 0, 0));
+    float a = tex2Dlod(s, float4(uv + float2( tap.x,  tap.y) / xy, 0, 0));
+    float b = tex2Dlod(s, float4(uv + float2(-tap.x, -tap.y) / xy, 0, 0));
     float c = tex2Dlod(s, float4(uv, 0, 0));
-    float d = tex2Dlod(s, float4(uv + float2(-tap.y,  tap.x) * BUFFER_PIXEL_SIZE, 0, 0));
-    float e = tex2Dlod(s, float4(uv + float2( tap.y, -tap.x) * BUFFER_PIXEL_SIZE, 0, 0));
+    float d = tex2Dlod(s, float4(uv + float2(-tap.y,  tap.x) / xy, 0, 0));
+    float e = tex2Dlod(s, float4(uv + float2( tap.y, -tap.x) / xy, 0, 0));
 
     return (a + b + c + d + e) * 0.2;  
 }
 
-void guided_filtering(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
+void guided_filtering(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2 output : SV_Target)
 {
-    float4 v = 1.0;    
-    v.x = resample(sRawOcclusion, texcoord);
-    kalman_online(v, sRawOcclusion, texcoord);    
+    float2 v = 1.0;  
+
+    v.x = resample(sRawOcclusion, texcoord, BUFFER_SCREEN_SIZE);
+    variance_online(v, texcoord);  
+
     output = v;
 }
 
-void pack_history(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 data : SV_Target)
+void pack_history(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2 data : SV_Target)
 {
-    data = tex2D(sReferanceOcclusion, texcoord);
+    data = tex2D(sReferanceOcclusion, texcoord).xy;
 }
 
 float get_fade_factor(float2 uv)
@@ -472,11 +464,11 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
     float fadefactor = get_fade_factor(uv);
     occlusion = lerp(occlusion, 1.0, fadefactor);
 
-    color = -log2(1.0 - color * color);
+    color = color / (1.0 - color + rcp(255.0));
     color *= occlusion;
-    color = sqrt(1.0 - exp2(-color));
+    color = color / (1.0 + color);
 
-    output = _Debug ? occlusion.xxx : color;
+    output = _Dm ? occlusion.xxx : color;
 }
 
 /*=============================================================================

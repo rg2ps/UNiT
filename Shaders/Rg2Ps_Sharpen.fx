@@ -1,6 +1,6 @@
 /*
    UNiT - Shader Library for ReShade.
-   Adaptive Frequency Domain Image Detail Restoration via Spectral Diffusion
+   Image Sharpening via Frequency Domain Convolution
    Source: https://en.wikipedia.org/wiki/Discrete_cosine_transform
 
    Sharpening in frequency domain is really effective detail enhancement 
@@ -287,16 +287,15 @@ void dct_III_V(float4 vpos : SV_Position, out float4 output : SV_Target)
     output = float4(dct_IIIe_col(sDCT_III_H, vpos.xy), 1.0);
 }
 
-float3 get_laplacian(float3 a, float3 b)
+float3 get_laplacian(float3 x, float3 center)
 {
-    float3 gaussian = a - b;
+    float3 gaussian = x - center;
     float3 window = rsqrt(abs(gaussian) + 1e-3) * cos(1.0 - gaussian * PI);
 
     // Just an non-linear laplacian remapping function
     return clamp(gaussian * window, -0.125, 0.125) * sqrt(A); 
 }
 
-// now the standard laplacian transform in spatial domain
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
 {
     float3 center = tex2Dfetch(sChannelColor, vpos.xy, 0).rgb;
@@ -308,7 +307,7 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
     x = fl(x);
 
     float3 laplacian = get_laplacian(x, center);
-	
+    
     output = _Debug ? dot(tl(laplacian), 1.0) * 6.0 : tl(center - laplacian);
 }
 

@@ -103,10 +103,10 @@ float erfinv(float x)
 /============================================================================*/
 uint hash32(uint x)
 {
-    x ^= (x >> 16) | 1u; // don't hash zero, at least one bit
-    x *= 0x7feb352du;
+    x ^= (x >> 16) | 1u;
+    x *= 0xdb01bd51u;
     x ^= x >> 15u;
-    x *= 0x846ca68bu;
+    x *= 0xc11a3e2cu;
     x ^= x >> 16u;
     return x;
 }
@@ -168,7 +168,7 @@ float gen_poisson(float2 lambda, uint seed, uint mip)
         strats += signbit(mip * seed);
         
 	    k++;
-	    p *= rand_uniform_0_1(k * (seed + strats));
+	    p *= rand_uniform_0_1(uint2(seed + strats, k));
 	    
 	    pdf *= lambda.x / float(k);
     }
@@ -184,7 +184,7 @@ void monte_carlo(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out floa
     uint seed = hash32(pos);
     if (_Animate) seed += reversebits(frameCount);
 
-    float3 color = tex2Dfetch(ReShade::BackBuffer, pos, 0).rgb; 
+    float3 color = saturate(tex2Dfetch(ReShade::BackBuffer, pos, 0).rgb); 
     float gray_color = gray3(color);
 
     float3 poisson = 0.0;
@@ -197,13 +197,11 @@ void monte_carlo(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out floa
     }
     else
     {
-        // to simulate b/w film, use two layers of emulsion, ensures they are uncorrelated with each other.
-        poisson += gen_poisson(tex2Dlod(sLambdaLUT, float4(gray_color, 0, 0, 0)).xy, seed + 0, 3) * 0.5;
-        poisson += gen_poisson(tex2Dlod(sLambdaLUT, float4(gray_color, 0, 0, 0)).xy, seed + 1, 4) * 0.5;
+        poisson += gen_poisson(tex2Dlod(sLambdaLUT, float4(gray_color, 0, 0, 0)).xy, seed, 0);
     }
     
     // back to sdr
-    output = float4(poisson / num_grains_inv(), 1.0);
+    output = float4(min(1.4142, poisson / num_grains_inv()), 1.0);
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target)

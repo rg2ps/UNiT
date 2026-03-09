@@ -7,13 +7,21 @@
    Read the end-user license agreement to get more details.
 */
  
-uniform float _Intensity
+uniform float I
 <
     ui_type = "drag";
-    ui_label = "Bloom Intensity";
+    ui_label = "Intensity";
     ui_category = "Globals";
     ui_min = 0.001; ui_max = 1.0;
 > = 0.3;
+
+uniform float S
+<
+    ui_type = "drag";
+    ui_label = "Sensitivity";
+    ui_category = "Globals";
+    ui_min = 0.001; ui_max = 1.0;
+> = 1.0;
 
 uniform float _UIMask
 <
@@ -33,7 +41,7 @@ uniform int _ZMode
 
 uniform bool _Debug
 <
-    ui_label = "Visualize Irradiance Map";
+    ui_label = "Visualize Lights";
     ui_category = "Debug Mode";
 > = false;
 
@@ -46,26 +54,26 @@ uniform bool _Debug
     #define DITHER_BIT_DEPTH 8
 #endif
 
-#define DO_TEXTURE(N) texture2D texLowPassLevel##N { Width = BUFFER_WIDTH >> N + 1; Height = BUFFER_HEIGHT >> N + 1; Format = RGBA16F;  }; sampler sLowPassLevel##N { Texture = texLowPassLevel##N;  };  
+#define WRITE_BUFFER(N) texture2D texLowPassLevel##N { Width = BUFFER_WIDTH >> N + 1; Height = BUFFER_HEIGHT >> N + 1; Format = RGBA16F;  }; sampler sLowPassLevel##N { Texture = texLowPassLevel##N;  };  
 
-DO_TEXTURE(0)
-DO_TEXTURE(1)
-DO_TEXTURE(2)
-DO_TEXTURE(3)
-DO_TEXTURE(4)
-DO_TEXTURE(5)
-DO_TEXTURE(6)
+WRITE_BUFFER(0)
+WRITE_BUFFER(1)
+WRITE_BUFFER(2)
+WRITE_BUFFER(3)
+WRITE_BUFFER(4)
+WRITE_BUFFER(5)
+WRITE_BUFFER(6)
 
-texture2D texBloomMap		
+texture2D texBloomPrepass	
 { 
     Width = BUFFER_WIDTH >> 1; 
     Height = BUFFER_HEIGHT >> 1; 
     Format = RGBA16F; 
 };
 
-sampler sBloomMap 
+sampler sBloomPrepass
 { 
-    Texture = texBloomMap; 
+    Texture = texBloomPrepass; 
 };
 
 texture2D texBloomPyramid	
@@ -106,6 +114,11 @@ float3 to_hdr(float3 x)
 float rnd(float2 p)
 {
     return frac(0.5 + p.x * 0.7548776662467 + p.y * 0.569840290998);
+}
+
+float3 normsq(float3 x)
+{
+    return max(0.0, (x * x) / grayscale(x));
 }
 
 /*=============================================================================
@@ -151,8 +164,7 @@ float4 tex2Dsample(sampler2D s, float2 uv, float mip)
 
 void depthmask(inout float3 x, float z0, float z1, float a)
 {
-    float v = saturate(exp2(-a * abs(z0 - z1) / z1 + 0.01));
-    x *= lerp(lerp(v, 1.0 - v * a, _ZMode), 1.0, 0.15);
+    x *= saturate(exp2(-0.5 * a * abs(z0 - z1) / ((_ZMode ? z0 : z1) + 0.0125)));
 }
 
 void pixeldither(in float seed, inout float3 x)
@@ -170,27 +182,24 @@ void pixeldither(in float seed, inout float3 x)
 /*=============================================================================
 /   Main Shader Workflow
 /============================================================================*/
-float3 chromascale(float3 x)
-{
-    return max(0.0, (x * x) / grayscale(x));
-}
 /*
     Writes irradiance map for bloom propagation
 */
-void pdf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target0)
+void psf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target0)
 {
-    float3 sdr = tex2D(ReShade::BackBuffer, texcoord).rgb;
+    float3 sdr = tex2Dsample(ReShade::BackBuffer, texcoord, -32.0).rgb;
     float3 hdr = pow(sdr, 2.2);
 
+    // https://www.ipol.im/pub/art/2020/300/article.pdf
     const float gamma = 0.05;
 
-    // https://www.ipol.im/pub/art/2020/300/article.pdf
     float3 v = saturate(grayscale(sdr)); 
     float3 k = -(0.5 - 0.5*pow((1.0 - v) / 0.5, gamma)); 
     float3 m = 255.0f / log10(abs(k) * 255.0 + 1.0);
-    float3 x = max(0.0, (255.0f - m) * (abs(k) * hdr));
+    float3 P = max(0.0, (sdr - abs(k) / gamma) * gamma);
+    float3 x = max(0.0, (255.0f - m) * (abs(k) * hdr) * S);
     
-    output = float4(chromascale(x), get_lin_depth(texcoord));
+    output = float4(P + normsq(x), get_lin_depth(texcoord));
 }
 
 /*
@@ -198,7 +207,7 @@ void pdf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o
 */
 void dl_0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = tex2Dscale(sBloomMap, texcoord, 1);
+    o = tex2Dscale(sBloomPrepass, texcoord, 1);
 }
 
 void dl_1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
@@ -286,14 +295,14 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
     color = pow(color, 2.2);
 
     color = to_hdr(color);
-    color += bloom.rgb * _Intensity;
+    color += bloom.rgb * I;
     color = from_hdr(color);
 
     color = pow(color, rcp(2.2));
 
     pixeldither(rnd(vpos.xy), color);
 
-    output = _Debug ? sqrt(bloom.rgb) : color;
+    output = _Debug ? sqrt(bloom.rgb * I) : color;
 }
 
 /*=============================================================================
@@ -305,7 +314,7 @@ ui_label = "UNiT: Lumi-Bloom";
 ui_tooltip = "                                  UNiT: Lumi-Bloom \n\n" "__________________________________________________________________________________________\n\n" "Lumi is the physically inspired bloom shader which simulate the realistic light diffusion.\n\n" " - Developed by RG2PS - "; >
 {
     // <>
-    pass { VertexShader = PostProcessVS; PixelShader = pdf_map; RenderTarget = texBloomMap; }
+    pass { VertexShader = PostProcessVS; PixelShader = psf_map; RenderTarget = texBloomPrepass; }
     // <>
     pass { VertexShader = PostProcessVS; PixelShader = dl_0; RenderTarget = texLowPassLevel0; }
     pass { VertexShader = PostProcessVS; PixelShader = dl_1; RenderTarget = texLowPassLevel1; }
