@@ -1,6 +1,6 @@
 /*
    UNiT - Shader Library for ReShade.
-   Stochastic Filmic Grain via Monte-Carlo Integration
+   Stochastic Film Grain Rendering via Monte-Carlo Integration
    
    Written for ReShade by RG2PS (c) 2026. Provided by EULA.
    Any file parts redistribution only with permission. All right reserved.
@@ -101,14 +101,11 @@ float erfinv(float x)
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
-uint hash32(uint x)
+uint hash32(uint seed) 
 {
-    x ^= (x >> 16) | 1u;
-    x *= 0xdb01bd51u;
-    x ^= x >> 15u;
-    x *= 0xc11a3e2cu;
-    x ^= x >> 16u;
-    return x;
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
 }
 
 uint hash32(uint2 x)
@@ -212,7 +209,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
     float3 sum = 0.0;
     float total = 0.0;
 
-    float2 width = float2(1.0, 0.5 * _Size);
+    float2 gaussian = float2(1.0, 0.5 * _Size);
 
     [unroll]for(int i = -1; i <= 1; i++)
     [unroll]for(int j = -1; j <= 1; j++)
@@ -229,7 +226,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
         float x = length(float2(i, j) + cell_seed);
         float weight = exp(-x * x);
         
-	    weight *= width[abs(i)] * width[abs(j)];
+	    weight *= gaussian[abs(i)] * gaussian[abs(j)];
 
 	    sum += poisson * weight;
 	    total += weight;

@@ -9,26 +9,19 @@
    Read the end-user license agreement to get more details.
 */
 
-uniform int _M
+uniform float A
 <
-    ui_type = "combo";
-    ui_items = "Detail Enhancer\0Local Tonemap\0";
-    ui_label = "LLF Mode";
-> = 0;
-
-uniform float _Alpha
-<
-    ui_label = "Contrast Strength";
+    ui_label = "Strength";
     ui_type = "drag";
     ui_min = -1.0; ui_max = 1.0;
-> = 0.5;
+> = 1.0;
 
-uniform float _Beta
+uniform float B
 <
-    ui_label = "Contrast Sigma";
+    ui_label = "Scale";
     ui_type = "drag";
     ui_min = 0.6; ui_max = 1.5;
-> = 1.0;
+> = 1.5;
 
 /*=============================================================================
 /   Buffer Samplers Definition
@@ -37,39 +30,39 @@ uniform float _Beta
 
 #define LUT_SIZE 256
 
-// group 1 (1/2, 1/2)
-texture2D texCascadeGroup1S	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGB10A2; };
-sampler sCascadeGroup1S		{ Texture = texCascadeGroup1S; };
-texture2D texCascadeGroup1L	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGB10A2; };
-sampler sCascadeGroup1L		{ Texture = texCascadeGroup1L; };
-// group 2 (1/4, 1/4)
-texture2D texCascadeGroup2S	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGB10A2; };
-sampler sCascadeGroup2S		{ Texture = texCascadeGroup2S; };
-texture2D texCascadeGroup2L	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGB10A2; };
-sampler sCascadeGroup2L		{ Texture = texCascadeGroup2L; };
-// group 2 (1/8, 1/8)
-texture2D texCascadeGroup3S	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGB10A2; };
-sampler sCascadeGroup3S		{ Texture = texCascadeGroup3S; };
-texture2D texCascadeGroup3L	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGB10A2; };
-sampler sCascadeGroup3L		{ Texture = texCascadeGroup3L; };
-// group 4 (1/16, 1/16)
-texture2D texCascadeGroup4S	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGB10A2; };
-sampler sCascadeGroup4S		{ Texture = texCascadeGroup4S; };
-texture2D texCascadeGroup4L	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGB10A2; };
-sampler sCascadeGroup4L		{ Texture = texCascadeGroup4L; };
-// group 5  (1/32, 1/32)
-texture2D texCascadeGroup5S	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGB10A2; };
-sampler sCascadeGroup5S		{ Texture = texCascadeGroup5S; };
-texture2D texCascadeGroup5L	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGB10A2; };
-sampler sCascadeGroup5L		{ Texture = texCascadeGroup5L; };
-// group 6 (1/64, 1/64)
-texture2D texCascadeGroup6S	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = RGB10A2; };
-sampler sCascadeGroup6S		{ Texture = texCascadeGroup6S; };
-texture2D texCascadeGroup6L	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = RGB10A2; };
-sampler sCascadeGroup6L		{ Texture = texCascadeGroup6L; };
-// remapping lut
-texture2D texWeightsLUT	    { Width = LUT_SIZE; Height = LUT_SIZE; Format = R16F; };
-sampler sWeightsLUT		    { Texture = texWeightsLUT; };
+// (1/2, 1/2)
+texture2D texGaussianSam1LevelCurr	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGB10A2; };
+sampler sGaussianSam1LevelCurr		{ Texture = texGaussianSam1LevelCurr; };
+texture2D texGaussianSam1LevelNext	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGB10A2; };
+sampler sGaussianSam1LevelNext		{ Texture = texGaussianSam1LevelNext; };
+// (1/4, 1/4)
+texture2D texGaussianSam2LevelCurr	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGB10A2; };
+sampler sGaussianSam2LevelCurr		{ Texture = texGaussianSam2LevelCurr; };
+texture2D texGaussianSam2LevelNext	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGB10A2; };
+sampler sGaussianSam2LevelNext		{ Texture = texGaussianSam2LevelNext; };
+// (1/8, 1/8)
+texture2D texGaussianSam3LevelCurr	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGB10A2; };
+sampler sGaussianSam3LevelCurr		{ Texture = texGaussianSam3LevelCurr; };
+texture2D texGaussianSam3LevelNext	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGB10A2; };
+sampler sGaussianSam3LevelNext		{ Texture = texGaussianSam3LevelNext; };
+// (1/16, 1/16)
+texture2D texGaussianSam4LevelCurr	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGB10A2; };
+sampler sGaussianSam4LevelCurr		{ Texture = texGaussianSam4LevelCurr; };
+texture2D texGaussianSam4LevelNext	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGB10A2; };
+sampler sGaussianSam4LevelNext		{ Texture = texGaussianSam4LevelNext; };
+// (1/32, 1/32)
+texture2D texGaussianSam5LevelCurr	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGB10A2; };
+sampler sGaussianSam5LevelCurr		{ Texture = texGaussianSam5LevelCurr; };
+texture2D texGaussianSam5LevelNext	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGB10A2; };
+sampler sGaussianSam5LevelNext		{ Texture = texGaussianSam5LevelNext; };
+// (1/64, 1/64)
+texture2D texGaussianSam6LevelCurr	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = RGB10A2; };
+sampler sGaussianSam6LevelCurr		{ Texture = texGaussianSam6LevelCurr; };
+texture2D texGaussianSam6LevelNext	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = RGB10A2; };
+sampler sGaussianSam6LevelNext		{ Texture = texGaussianSam6LevelNext; };
+
+texture2D texCurveLookupTable   { Width = LUT_SIZE; Height = LUT_SIZE; Format = R16F; };
+sampler sCurveLookupTable       { Texture = texCurveLookupTable; };
 
 /*=============================================================================
 /   Global Helper Functions
@@ -86,12 +79,12 @@ float3 safesqrt(float3 x)
 
 float3 to_gamma(float3 x)
 {
-    return safesqrt(x);
+    return pow(abs(x), rcp(2.2)) * sign(x);
 }
 
 float3 from_gamma(float3 x)
 {
-    return x * x * sign(x);
+    return pow(abs(x), 2.2) * sign(x);
 }
 
 float3 to_hdr(float3 x)
@@ -107,10 +100,11 @@ float3 from_hdr(float3 x)
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
+#define SIGMA_WEIGHT 64.0
 // Using lut to avoid recalculating weights math on each draw call. Less cache misses?
-void weight_lut(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float o : SV_Target)
+void draw_lut(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float o : SV_Target)
 {
-    o = min(LUT_SIZE - 1, rsqrt(uv.x * 3.0) * 64.0) / (LUT_SIZE - 1);
+    o = min(LUT_SIZE - 1, rsqrt(uv.x * 3.0) * SIGMA_WEIGHT) / (LUT_SIZE - 1);
 }
 
 float textureLUT(sampler2D s, float3 x)
@@ -118,150 +112,171 @@ float textureLUT(sampler2D s, float3 x)
     return tex2Dlod(s, float4(dot3(x) / 3.0, 0, 0, 0)) * (LUT_SIZE - 1);
 }
 
-float3 gaussian_remap(float3 higher, float3 lower)
+float3 do_remap(float3 x, float3 center)
 {
-    float3 gaussian = lower - higher;
-    float3 exposure = lower + higher;
-
-    float sigma = textureLUT(sWeightsLUT, exposure);
-    float alpha = safesqrt(_Alpha) * 2.0;
-
-    float3 x = _M ? 1.0 - exposure : dot3((alpha > 0 ? 2 : 1) * safesqrt(gaussian));
-    float3 curve = rsqrt(sigma) * x + sqrt(sigma) * exp(-sigma * abs(gaussian)) * gaussian;
-
-    return curve * alpha;
+    float3 gaussian = center - x;
+    float q = textureLUT(sCurveLookupTable, center + x);
+    float a = safesqrt(A) * 2.0;
+    float3 k = ((a > 0 ? 2.0 * sqrt(SIGMA_WEIGHT) : 1) * gaussian); //((a > 0 ? 2.0 * sqrt(q) : 1) * gaussian);
+    
+    return (rsqrt(q) * k + sqrt(q) * exp(-q * abs(gaussian)) * gaussian) * a;
 }
 
-float3 lpass(sampler2D s, float2 uv, float mip, float resolution)
+float3 downsample(sampler2D s, float2 uv, float resolution)
 {
-    // 3x3 tap gaussian aproxximation
     float2 tap = BUFFER_PIXEL_SIZE * rcp(resolution);
 
     float3 a = tex2Dlod(s, float4(uv.x - tap.x, uv.y + tap.y, 0, 0));
     float3 b = tex2Dlod(s, float4(uv.x,         uv.y + tap.y, 0, 0));
     float3 c = tex2Dlod(s, float4(uv.x + tap.x, uv.y + tap.y, 0, 0));
-
     float3 d = tex2Dlod(s, float4(uv.x - tap.x, uv.y, 0, 0));
     float3 e = tex2Dlod(s, float4(uv.x,         uv.y, 0, 0));
     float3 f = tex2Dlod(s, float4(uv.x + tap.x, uv.y, 0, 0));
-
     float3 g = tex2Dlod(s, float4(uv.x - tap.x, uv.y - tap.y, 0, 0));
     float3 h = tex2Dlod(s, float4(uv.x,         uv.y - tap.y, 0, 0));
     float3 i = tex2Dlod(s, float4(uv.x + tap.x, uv.y - tap.y, 0, 0));
 
-    float3 window = e * 4.0;
-    window += (b + d + f + h) * 2.0;
-    window += (a + c + g + i);
-
-    return window / 16.0;
+    return (e*4.0 + (a+b+c+d)*2.0 + (f+g+h+i)) / 16.0;
 }
 
 /*=============================================================================
 /   Main Shader Workflow
 /============================================================================*/
-void csc_g1s(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(ReShade::BackBuffer, texcoord, 0, 0.5), 1.0);
-}
-void csc_g1l(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup1S, texcoord, 1, 0.5), 1.0);
-}
-void csc_g2s(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup1L, texcoord, 2, 0.25), 1.0);
-}
-void csc_g2l(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup2S, texcoord, 3, 0.25), 1.0);
-}
-void csc_g3s(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup2L, texcoord, 4, 0.125), 1.0);
-}
-void csc_g3l(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup3S, texcoord, 5, 0.125), 1.0);
-}
-void csc_g4s(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup3L, texcoord, 6, 0.0625), 1.0);
-}
-void csc_g4l(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup4S, texcoord, 7, 0.0625), 1.0);
-}
-void csc_g5s(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup4L, texcoord, 8, 0.03125), 1.0);
-}
-void csc_g5l(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup5S, texcoord, 9, 0.03125), 1.0);
-}
-void csc_g6s(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup5L, texcoord, 10, 0.015625), 1.0);
-}
-void csc_g6l(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) {
-    o = float4(lpass(sCascadeGroup6S, texcoord, 11, 0.015625), 1.0);
+void t1_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(ReShade::BackBuffer, texcoord, 0.5), 1.0);
 }
 
-void fetchLevel(in float2 uv, out float3 L[13])
+void t1_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    L = {
+    o = float4(downsample(sGaussianSam1LevelCurr, texcoord, 0.5), 1.0);
+}
+
+void t2_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam1LevelNext, texcoord, 0.25), 1.0);
+}
+
+void t2_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam2LevelCurr, texcoord, 0.25), 1.0);
+}
+
+void t3_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam2LevelNext, texcoord, 0.125), 1.0);
+}
+
+void t3_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam3LevelCurr, texcoord, 0.125), 1.0);
+}
+
+void t4_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam3LevelNext, texcoord, 0.0625), 1.0);
+}
+
+void t4_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam4LevelCurr, texcoord, 0.0625), 1.0);
+}
+
+void t5_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam4LevelNext, texcoord, 0.03125), 1.0);
+}
+
+void t5_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam5LevelCurr, texcoord, 0.03125), 1.0);
+}
+
+void t6_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam5LevelNext, texcoord, 0.015625), 1.0);
+}
+
+void t6_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
+{
+    o = float4(downsample(sGaussianSam6LevelCurr, texcoord, 0.015625), 1.0);
+}
+
+void fetch_level(in float2 uv, out float3 p[13])
+{
+    p = {
+        // center
         tex2D(ReShade::BackBuffer, uv).rgb,
-        tex2D(sCascadeGroup1S, uv).rgb,
-        tex2D(sCascadeGroup1L, uv).rgb,
-        tex2D(sCascadeGroup2S, uv).rgb,
-        tex2D(sCascadeGroup2L, uv).rgb,
-        tex2D(sCascadeGroup3S, uv).rgb,
-        tex2D(sCascadeGroup3L, uv).rgb,
-        tex2D(sCascadeGroup4S, uv).rgb,
-        tex2D(sCascadeGroup4L, uv).rgb,
-        tex2D(sCascadeGroup5S, uv).rgb,
-        tex2D(sCascadeGroup5L, uv).rgb,
-        tex2D(sCascadeGroup6S, uv).rgb,
-        tex2D(sCascadeGroup6L, uv).rgb
+
+        // 1
+        tex2D(sGaussianSam1LevelCurr, uv).rgb,
+        tex2D(sGaussianSam1LevelNext, uv).rgb,
+
+        // 2
+        tex2D(sGaussianSam2LevelCurr, uv).rgb,
+        tex2D(sGaussianSam2LevelNext, uv).rgb,
+
+        // 3
+        tex2D(sGaussianSam3LevelCurr, uv).rgb,
+        tex2D(sGaussianSam3LevelNext, uv).rgb,
+
+        // 4
+        tex2D(sGaussianSam4LevelCurr, uv).rgb,
+        tex2D(sGaussianSam4LevelNext, uv).rgb,
+
+        // 5
+        tex2D(sGaussianSam5LevelCurr, uv).rgb,
+        tex2D(sGaussianSam5LevelNext, uv).rgb,
+
+        // 6
+        tex2D(sGaussianSam6LevelCurr, uv).rgb,
+        tex2D(sGaussianSam6LevelNext, uv).rgb
     };
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target)
 {
-    float3 L[13];
-    float3 G[13];
+    float3 p[13];
+    float3 v[13];
     float3 x = 0;
 
-    fetchLevel(texcoord, L);
+    fetch_level(texcoord, p);
 
-    float3 center = L[0]; // original
+    float k = rsqrt(exp2(B));
+    float2 weight = float2(1.0 - k, k);
 
-    float s = rsqrt(exp2(_Beta));
-    float2 o = float2(1.0 - s, s);
-
-    // cascaded gaussians, low-pass upsampling
+    // low-pass upsampling -> (forward)
     for (int i = 1; i <= 11; i++) 
     {
-        L[i+1] = L[i] * o.x + L[i+1] * o.y;
+        p[i+1] = p[i] * weight.x + p[i+1] * weight.y;
     }
 
-    // the second derivative...
+    // main transform
     for (int i = 1; i <= 12; i++) 
     {
-        G[i] = gaussian_remap(L[i], L[i-1]);
+        v[i] = do_remap(p[i], p[i-1]);
     }
     
-    // cascaded laplacians next, high-pass upsampling
+    // high-pass upsampling <- (backward)
     for (int i = 1; i <= 11; i++) 
     { 
-        G[i+1] = o.y * G[i] + o.x * G[i+1];
+        v[i+1] = weight.y * v[i] + weight.x * v[i+1];
     }
 
-    for (int i = 1; i <= 12; i++) 
+    for (int i = 1; i <= 11; i++) 
     {
-        x += G[i];
+        x += v[i] * 0.09090909090909;
     }
-
-    x /= 12.0;
     
-    float2 mean;
-    mean.x = dot3(center);
-    mean.y = dot3(x);
-    
-    center = to_hdr(from_gamma(center));
-    center *= (mean.x + 2.0 * mean.y) / (mean.x);
-    center = to_gamma(from_hdr(center));
+    float3 color = p[0];
 
-    output = center;
+    float center_luma = dot3(color);
+    float luma = dot3(x) * 2.0;
+    
+    color = to_hdr(from_gamma(color));
+    color *= (center_luma + luma) / (center_luma + 1e-3);
+
+    output = to_gamma(from_hdr(color));
 }
 
 /*=============================================================================
@@ -272,24 +287,24 @@ ui_label = "UNiT: Laplacians";
 ui_tooltip = "									UNiT: Fast-LLF \n\n" "___________________________________________________________________________________________\n\n" "Fast and visual-accurate implementation of the local laplacian filtering image enhancement\n" "that capable in real time, similar to that used in professional photo editors.\n\n" " - Developed by RG2PS - "; >
 {
     // <> Group 1
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g1s; RenderTarget = texCascadeGroup1S; }
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g1l; RenderTarget = texCascadeGroup1L; }
+    pass { VertexShader = PostProcessVS; PixelShader = t1_curr; RenderTarget = texGaussianSam1LevelCurr; }
+    pass { VertexShader = PostProcessVS; PixelShader = t1_temp; RenderTarget = texGaussianSam1LevelNext; }
     // <> Group 2
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g2s; RenderTarget = texCascadeGroup2S; }
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g2l; RenderTarget = texCascadeGroup2L; }
+    pass { VertexShader = PostProcessVS; PixelShader = t2_curr; RenderTarget = texGaussianSam2LevelCurr; }
+    pass { VertexShader = PostProcessVS; PixelShader = t2_temp; RenderTarget = texGaussianSam2LevelNext; }
     // <> Group 3
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g3s; RenderTarget = texCascadeGroup3S; }
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g3l; RenderTarget = texCascadeGroup3L; }
+    pass { VertexShader = PostProcessVS; PixelShader = t3_curr; RenderTarget = texGaussianSam3LevelCurr; }
+    pass { VertexShader = PostProcessVS; PixelShader = t3_temp; RenderTarget = texGaussianSam3LevelNext; }
     // <> Group 4
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g4s; RenderTarget = texCascadeGroup4S; }
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g4l; RenderTarget = texCascadeGroup4L; }
+    pass { VertexShader = PostProcessVS; PixelShader = t4_curr; RenderTarget = texGaussianSam4LevelCurr; }
+    pass { VertexShader = PostProcessVS; PixelShader = t4_temp; RenderTarget = texGaussianSam4LevelNext; }
     // <> Group 5
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g5s; RenderTarget = texCascadeGroup5S; }
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g5l; RenderTarget = texCascadeGroup5L; }
+    pass { VertexShader = PostProcessVS; PixelShader = t5_curr; RenderTarget = texGaussianSam5LevelCurr; }
+    pass { VertexShader = PostProcessVS; PixelShader = t5_temp; RenderTarget = texGaussianSam5LevelNext; }
     // <> Group 6
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g6s; RenderTarget = texCascadeGroup6S; }
-    pass { VertexShader = PostProcessVS; PixelShader = csc_g6l; RenderTarget = texCascadeGroup6L; }
+    pass { VertexShader = PostProcessVS; PixelShader = t6_curr; RenderTarget = texGaussianSam6LevelCurr; }
+    pass { VertexShader = PostProcessVS; PixelShader = t6_temp; RenderTarget = texGaussianSam6LevelNext; }
     // <>
-    pass { VertexShader = PostProcessVS; PixelShader = weight_lut; RenderTarget = texWeightsLUT; }
+    pass { VertexShader = PostProcessVS; PixelShader = draw_lut; RenderTarget = texCurveLookupTable; }
     pass { VertexShader = PostProcessVS; PixelShader = main; }
 }
