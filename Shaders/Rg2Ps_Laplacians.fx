@@ -11,58 +11,54 @@
 
 uniform float A
 <
-    ui_label = "Strength";
+    ui_label = "Contrast Strength";
     ui_type = "drag";
     ui_min = -1.0; ui_max = 1.0;
 > = 1.0;
 
-uniform float B
+uniform int _w
 <
-    ui_label = "Scale";
-    ui_type = "drag";
-    ui_min = 0.6; ui_max = 1.5;
-> = 1.5;
+    ui_type = "combo";
+    ui_items = "Root-Two\0Gaussian\0";
+    ui_label = "Laplacian Weighting";
+> = 0;
 
 /*=============================================================================
 /   Buffer Samplers Definition
 /============================================================================*/
 #include "ReShade.fxh"
 
-#define LUT_SIZE 256
-
-// (1/2, 1/2)
-texture2D texGaussianSam1LevelCurr	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGB10A2; };
+// (1, 1)
+// for better performace can be rendered in half-res (1/2 -> 1/64), but I do render at full-res for a mathematically pure result
+texture2D texGaussianSam1LevelCurr	{ Width = BUFFER_WIDTH >> 0; Height = BUFFER_HEIGHT >> 0; Format = RGB10A2; };
 sampler sGaussianSam1LevelCurr		{ Texture = texGaussianSam1LevelCurr; };
-texture2D texGaussianSam1LevelNext	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGB10A2; };
+texture2D texGaussianSam1LevelNext	{ Width = BUFFER_WIDTH >> 0; Height = BUFFER_HEIGHT >> 0; Format = RGB10A2; };
 sampler sGaussianSam1LevelNext		{ Texture = texGaussianSam1LevelNext; };
-// (1/4, 1/4)
-texture2D texGaussianSam2LevelCurr	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGB10A2; };
+// (1/2, 1/2)
+texture2D texGaussianSam2LevelCurr	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGB10A2; };
 sampler sGaussianSam2LevelCurr		{ Texture = texGaussianSam2LevelCurr; };
-texture2D texGaussianSam2LevelNext	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGB10A2; };
+texture2D texGaussianSam2LevelNext	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = RGB10A2; };
 sampler sGaussianSam2LevelNext		{ Texture = texGaussianSam2LevelNext; };
-// (1/8, 1/8)
-texture2D texGaussianSam3LevelCurr	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGB10A2; };
+// (1/4, 1/4)
+texture2D texGaussianSam3LevelCurr	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGB10A2; };
 sampler sGaussianSam3LevelCurr		{ Texture = texGaussianSam3LevelCurr; };
-texture2D texGaussianSam3LevelNext	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGB10A2; };
+texture2D texGaussianSam3LevelNext	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = RGB10A2; };
 sampler sGaussianSam3LevelNext		{ Texture = texGaussianSam3LevelNext; };
-// (1/16, 1/16)
-texture2D texGaussianSam4LevelCurr	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGB10A2; };
+// (1/8, 1/8)
+texture2D texGaussianSam4LevelCurr	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGB10A2; };
 sampler sGaussianSam4LevelCurr		{ Texture = texGaussianSam4LevelCurr; };
-texture2D texGaussianSam4LevelNext	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGB10A2; };
+texture2D texGaussianSam4LevelNext	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = RGB10A2; };
 sampler sGaussianSam4LevelNext		{ Texture = texGaussianSam4LevelNext; };
-// (1/32, 1/32)
-texture2D texGaussianSam5LevelCurr	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGB10A2; };
+// (1/16, 1/16)
+texture2D texGaussianSam5LevelCurr	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGB10A2; };
 sampler sGaussianSam5LevelCurr		{ Texture = texGaussianSam5LevelCurr; };
-texture2D texGaussianSam5LevelNext	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGB10A2; };
+texture2D texGaussianSam5LevelNext	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = RGB10A2; };
 sampler sGaussianSam5LevelNext		{ Texture = texGaussianSam5LevelNext; };
-// (1/64, 1/64)
-texture2D texGaussianSam6LevelCurr	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = RGB10A2; };
+// (1/32, 1/32)
+texture2D texGaussianSam6LevelCurr	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGB10A2; };
 sampler sGaussianSam6LevelCurr		{ Texture = texGaussianSam6LevelCurr; };
-texture2D texGaussianSam6LevelNext	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = RGB10A2; };
+texture2D texGaussianSam6LevelNext	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = RGB10A2; };
 sampler sGaussianSam6LevelNext		{ Texture = texGaussianSam6LevelNext; };
-
-texture2D texCurveLookupTable   { Width = LUT_SIZE; Height = LUT_SIZE; Format = R16F; };
-sampler sCurveLookupTable       { Texture = texCurveLookupTable; };
 
 /*=============================================================================
 /   Global Helper Functions
@@ -97,29 +93,47 @@ float3 from_hdr(float3 x)
     return x * rsqrt(1.0 + x * x);
 }
 
+float clampn1(float x)
+{
+    return clamp(x, -1.0, 1.0);
+}
+
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
-#define SIGMA_WEIGHT 64.0
-// Using lut to avoid recalculating weights math on each draw call. Less cache misses?
-void draw_lut(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float o : SV_Target)
-{
-    o = min(LUT_SIZE - 1, rsqrt(uv.x * 3.0) * SIGMA_WEIGHT) / (LUT_SIZE - 1);
-}
+#define SIGMA_WEIGHT 20.0
 
-float textureLUT(sampler2D s, float3 x)
+/*
+// f(g) = (1/o) * g + exp(-o * |g|) * g * alpha
+float3 do_remap(float3 x, float3 center)
 {
-    return tex2Dlod(s, float4(dot3(x) / 3.0, 0, 0, 0)) * (LUT_SIZE - 1);
+    const float o = SIGMA_WEIGHT;
+
+    float3 gaussian = center - x;
+    
+    return rcp(o) * gaussian + exp(-o * abs(gaussian)) * gaussian * clampn1(A);
 }
+*/
+
+/*
+// f(g) = (1/o * (1/|alpha|)) * g + exp(-(o * (1/|alpha|)) * |g|) * g * sgn(alpha)
+float3 do_remap(float3 x, float3 center)
+{
+    float o = SIGMA_WEIGHT / (A == 0 ? 1.0 : abs(A));
+
+    float3 gaussian = center - x;
+
+    return rcp(o) * gaussian + exp(-o * abs(gaussian)) * gaussian * (A > 0.0 ? sign(A) : A);
+}
+*/
 
 float3 do_remap(float3 x, float3 center)
 {
-    float3 gaussian = center - x;
-    float q = textureLUT(sCurveLookupTable, center + x);
-    float a = safesqrt(A) * 2.0;
-    float3 k = ((a > 0 ? 2.0 * sqrt(SIGMA_WEIGHT) : 1) * gaussian); //((a > 0 ? 2.0 * sqrt(q) : 1) * gaussian);
+    float o = SIGMA_WEIGHT;
     
-    return (rsqrt(q) * k + sqrt(q) * exp(-q * abs(gaussian)) * gaussian) * a;
+    float3 gaussian = center - x;
+
+    return rcp(o) * gaussian + exp(-o * abs(gaussian)) * gaussian * clampn1(A);
 }
 
 float3 downsample(sampler2D s, float2 uv, float resolution)
@@ -136,7 +150,7 @@ float3 downsample(sampler2D s, float2 uv, float resolution)
     float3 h = tex2Dlod(s, float4(uv.x,         uv.y - tap.y, 0, 0));
     float3 i = tex2Dlod(s, float4(uv.x + tap.x, uv.y - tap.y, 0, 0));
 
-    return (e*4.0 + (a+b+c+d)*2.0 + (f+g+h+i)) / 16.0;
+    return (e*4.0 + (a+b+c+d)*2.0 + (f+g+h+i)) * 0.0625;
 }
 
 /*=============================================================================
@@ -144,91 +158,79 @@ float3 downsample(sampler2D s, float2 uv, float resolution)
 /============================================================================*/
 void t1_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(ReShade::BackBuffer, texcoord, 0.5), 1.0);
+    o = float4(downsample(ReShade::BackBuffer, texcoord, 1.0), 1.0);
 }
 
 void t1_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam1LevelCurr, texcoord, 0.5), 1.0);
+    o = float4(downsample(sGaussianSam1LevelCurr, texcoord, 1.0), 1.0);
 }
 
 void t2_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam1LevelNext, texcoord, 0.25), 1.0);
+    o = float4(downsample(sGaussianSam1LevelNext, texcoord, 0.5), 1.0);
 }
 
 void t2_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam2LevelCurr, texcoord, 0.25), 1.0);
+    o = float4(downsample(sGaussianSam2LevelCurr, texcoord, 0.5), 1.0);
 }
 
 void t3_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam2LevelNext, texcoord, 0.125), 1.0);
+    o = float4(downsample(sGaussianSam2LevelNext, texcoord, 0.25), 1.0);
 }
 
 void t3_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam3LevelCurr, texcoord, 0.125), 1.0);
+    o = float4(downsample(sGaussianSam3LevelCurr, texcoord, 0.25), 1.0);
 }
 
 void t4_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam3LevelNext, texcoord, 0.0625), 1.0);
+    o = float4(downsample(sGaussianSam3LevelNext, texcoord, 0.125), 1.0);
 }
 
 void t4_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam4LevelCurr, texcoord, 0.0625), 1.0);
+    o = float4(downsample(sGaussianSam4LevelCurr, texcoord, 0.125), 1.0);
 }
 
 void t5_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam4LevelNext, texcoord, 0.03125), 1.0);
+    o = float4(downsample(sGaussianSam4LevelNext, texcoord, 0.0625), 1.0);
 }
 
 void t5_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam5LevelCurr, texcoord, 0.03125), 1.0);
+    o = float4(downsample(sGaussianSam5LevelCurr, texcoord, 0.0625), 1.0);
 }
 
 void t6_curr(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam5LevelNext, texcoord, 0.015625), 1.0);
+    o = float4(downsample(sGaussianSam5LevelNext, texcoord, 0.03125), 1.0);
 }
 
 void t6_temp(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(downsample(sGaussianSam6LevelCurr, texcoord, 0.015625), 1.0);
+    o = float4(downsample(sGaussianSam6LevelCurr, texcoord, 0.03125), 1.0);
 }
 
-void fetch_level(in float2 uv, out float3 p[13])
+void gaussianfetch(in float2 uv, out float3 _sample[13])
 {
-    p = {
-        // center
-        tex2D(ReShade::BackBuffer, uv).rgb,
-
-        // 1
+    _sample = 
+    {
+        tex2D(ReShade::BackBuffer,    uv).rgb,
         tex2D(sGaussianSam1LevelCurr, uv).rgb,
         tex2D(sGaussianSam1LevelNext, uv).rgb,
-
-        // 2
         tex2D(sGaussianSam2LevelCurr, uv).rgb,
         tex2D(sGaussianSam2LevelNext, uv).rgb,
-
-        // 3
         tex2D(sGaussianSam3LevelCurr, uv).rgb,
         tex2D(sGaussianSam3LevelNext, uv).rgb,
-
-        // 4
         tex2D(sGaussianSam4LevelCurr, uv).rgb,
         tex2D(sGaussianSam4LevelNext, uv).rgb,
-
-        // 5
         tex2D(sGaussianSam5LevelCurr, uv).rgb,
         tex2D(sGaussianSam5LevelNext, uv).rgb,
-
-        // 6
         tex2D(sGaussianSam6LevelCurr, uv).rgb,
         tex2D(sGaussianSam6LevelNext, uv).rgb
     };
@@ -240,10 +242,9 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
     float3 v[13];
     float3 x = 0;
 
-    fetch_level(texcoord, p);
+    gaussianfetch(texcoord, p);
 
-    float k = rsqrt(exp2(B));
-    float2 weight = float2(1.0 - k, k);
+    float2 weight = _w ? float2(0.377541, 0.622459) : float2(0.292893, 0.707106);
 
     // low-pass upsampling -> (forward)
     for (int i = 1; i <= 11; i++) 
@@ -251,7 +252,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
         p[i+1] = p[i] * weight.x + p[i+1] * weight.y;
     }
 
-    // main transform
+    // transform
     for (int i = 1; i <= 12; i++) 
     {
         v[i] = do_remap(p[i], p[i-1]);
@@ -265,18 +266,20 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 
     for (int i = 1; i <= 11; i++) 
     {
-        x += v[i] * 0.09090909090909;
+        x += v[i];
     }
     
     float3 color = p[0];
+    float luma = dot3(x);
 
     float center_luma = dot3(color);
-    float luma = dot3(x) * 2.0;
+    float linear_luma = luma * 2.0;
     
     color = to_hdr(from_gamma(color));
-    color *= (center_luma + luma) / (center_luma + 1e-3);
+    color *= (center_luma + linear_luma) / (center_luma + 1e-6);
+    color = to_gamma(from_hdr(color));
 
-    output = to_gamma(from_hdr(color));
+    output = color;
 }
 
 /*=============================================================================
@@ -305,6 +308,5 @@ ui_tooltip = "									UNiT: Fast-LLF \n\n" "___________________________________
     pass { VertexShader = PostProcessVS; PixelShader = t6_curr; RenderTarget = texGaussianSam6LevelCurr; }
     pass { VertexShader = PostProcessVS; PixelShader = t6_temp; RenderTarget = texGaussianSam6LevelNext; }
     // <>
-    pass { VertexShader = PostProcessVS; PixelShader = draw_lut; RenderTarget = texCurveLookupTable; }
     pass { VertexShader = PostProcessVS; PixelShader = main; }
 }
