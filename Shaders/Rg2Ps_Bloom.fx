@@ -21,7 +21,7 @@ uniform float S
     ui_label = "Sensitivity";
     ui_category = "Globals";
     ui_min = 0.001; ui_max = 1.0;
-> = 1.0;
+> = 0.75;
 
 uniform float _UIMask
 <
@@ -191,13 +191,13 @@ void psf_map(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o
     float3 hdr = pow(sdr, 2.2);
 
     // https://www.ipol.im/pub/art/2020/300/article.pdf
-    const float gamma = 0.05;
+    const float gamma = 0.05 * S;
 
     float3 v = saturate(grayscale(sdr)); 
     float3 k = -(0.5 - 0.5*pow((1.0 - v) / 0.5, gamma)); 
     float3 m = 255.0f / log10(abs(k) * 255.0 + 1.0);
     float3 P = max(0.0, (sdr - abs(k) / gamma) * gamma);
-    float3 x = max(0.0, (255.0f - m) * (abs(k) * hdr) * S);
+    float3 x = max(0.0, (255.0f - m) * (abs(k) * hdr));
     
     output = float4(P + normsq(x), get_lin_depth(texcoord));
 }
