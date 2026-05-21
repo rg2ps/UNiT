@@ -12,16 +12,16 @@
    Read the end-user license agreement to get more details.
 */
 
-uniform float A
+uniform float STRENGTH
 <
-    ui_label = "Sharpen Strength";
+    ui_label = "Sharpening Strength";
     ui_type = "slider";
     ui_min = 0.001; ui_max = 1.0;
 > = 1.0f;
 
-uniform bool _Debug
+uniform bool DEBUG
 <
-    ui_label = "Visialize Laplacian";
+    ui_label = "Visialize Sharpening";
     ui_type = "radio";
 > = false;
 
@@ -30,15 +30,16 @@ uniform bool _Debug
 /============================================================================*/
 #include "ReShade.fxh"
 
-#define PI  3.1415926535897932384626433832795
-
-#define fl(x) sqrt(x)
-#define tl(x) sign(x) * ((x)*(x))
+#define PI 3.1415926535897932384626433832795
 
 texture texChannelColor : COLOR;
 
 #ifndef DCT_TILE_SIZE
- #define DCT_TILE_SIZE 8
+    #define DCT_TILE_SIZE 8
+#endif 
+
+#ifndef SIGMA_CONVOLUTION
+    #define SIGMA_CONVOLUTION 2.0
 #endif 
 
 sampler sChannelColor
@@ -118,21 +119,20 @@ float l_eigenvalue(float2 xy, in block dct)
 {
     int local_x = int(xy.x) % dct.tile_size;
     int local_y = int(xy.y) % dct.tile_size;
-    
-    // frequency domain approximation of the laplacian eigenvalue: https://www.shadertoy.com/view/MctyD8
+
+    float fx = float(local_x) / float(dct.tile_size - 1);
+
     float lx = sin(PI * float(local_x) / (2.0 * float(dct.tile_size)));
     lx = 4.0 * lx * lx;
     
     float ly = sin(PI * float(local_y) / (2.0 * float(dct.tile_size)));
     ly = 4.0 * ly * ly; 
-    
-    // usage the radial deviation smooths tile bounds
-    float fx = float(local_x) / float(dct.tile_size - 1);
+
     float fy = float(local_y) / float(dct.tile_size - 1);
 
-    float radial = sqrt(fx * fx + fy * fy);
+    float radial = sqrt(fx * fx + fy * fy) * 0.7071;
     
-    return ((lx + ly) + radial) * radial; 
+    return (lx + ly + radial) * radial; 
 }
 
 float3 dct_IIe_row(sampler2D s, float2 xy)
@@ -172,7 +172,7 @@ float3 dct_IIe_col(sampler2D s, float2 xy)
     block dct = DCT(); 
 
     float lambda = l_eigenvalue(xy, dct);
-    float weight = exp(-0.125 * lambda);
+    float weight = exp(-lambda / (SIGMA_CONVOLUTION * SIGMA_CONVOLUTION));
 
     int tiles_y = dct.grid_size.y;
     int tile_y = int(xy.y) / dct.tile_size;
@@ -266,7 +266,9 @@ float3 dct_IIIe_col(sampler2D s, float2 xy)
     return a;
 }
 
-// Shader entry points start: spatial -> II -> frequency -> III -> spatial
+/*=============================================================================
+/   Shader entry points start: spatial -> II -> frequency -> III -> spatial
+/============================================================================*/
 void dct_II_H(float4 vpos : SV_Position, out float4 output : SV_Target)
 {
     output = float4(dct_IIe_row(sChannelColor, vpos.xy), 1.0);
@@ -287,28 +289,53 @@ void dct_III_V(float4 vpos : SV_Position, out float4 output : SV_Target)
     output = float4(dct_IIIe_col(sDCT_III_H, vpos.xy), 1.0);
 }
 
-float3 get_laplacian(float3 x, float3 center)
+float3 do_remap(in float3 x, out float k)
 {
-    float3 gaussian = x - center;
-    float3 window = rsqrt(abs(gaussian) + 1e-3) * cos(1.0 - gaussian * PI);
+	const float HALF_PI = 1.57079;
+	
+	float sigma = sqrt(2.0);
+	float sigma_sqr = sigma * sigma;
 
-    // Just an non-linear laplacian remapping function
-    return clamp(gaussian * window, -0.125, 0.125) * sqrt(A); 
+    // For each DCT decomposition level, the extent to which the Laplacian (the difference between adjacent levels) 
+    // fits within the linear range of the s-curve [-π/(2σ²), π/(2σ²)] is calculated. 
+    // If the Laplacian falls outside this range, the s-curve saturates, and k → 1—this indicates a boundary case where the DCT reconstruction is unreliable. 
+    // At such points, the signal reverts to the original, preventing halo artifacts.
+    float3 responce = sin(clamp(x * sigma_sqr, -HALF_PI, HALF_PI)) / sigma_sqr;
+    float error = saturate(dot(responce, responce));
+
+    k = error;
+	
+	return x * sqrt(SIGMA_CONVOLUTION) * 2.0;
 }
 
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
 {
-    float3 center = tex2Dfetch(sChannelColor, vpos.xy, 0).rgb;
-    float3 x = tex2Dfetch(sDCT_III_V, vpos.xy, 0).rgb;
+    float3 p0 = tex2Dfetch(sChannelColor, vpos.xy, 0).rgb;     // signal
+    float3 p1 = tex2Dfetch(sDCT_II_H, vpos.xy, 0).rgb;         // II-H
+    float3 p2 = tex2Dfetch(sDCT_II_V, vpos.xy, 0).rgb;         // II-V  
+    float3 p3 = tex2Dfetch(sDCT_III_H, vpos.xy, 0).rgb;        // III-H
+    float3 p4 = tex2Dfetch(sDCT_III_V, vpos.xy, 0).rgb;        // III-V (diffusion)
 
-    x = max(0.0, x); // avoid negs
-    
-    center = fl(center);
-    x = fl(x);
+    float3 L1 = p0 - p1;
+    float3 L2 = p1 - p2;
+    float3 L3 = p2 - p3; 
+    float3 L4 = p3 - p4; 
 
-    float3 laplacian = get_laplacian(x, center);
+    float3 guide = p0; // p4
     
-    output = _Debug ? dot(tl(laplacian), 1.0) * 6.0 : tl(center - laplacian);
+    float3 signal = DEBUG ? 0.0 : guide;
+
+    float k_max = 0;
+    float k;
+
+    signal += do_remap(L4, k); k_max = max(k_max, k);
+    signal += do_remap(L3, k); k_max = max(k_max, k);
+    signal += do_remap(L2, k); k_max = max(k_max, k);
+    signal += do_remap(L1, k); k_max = max(k_max, k);
+
+    signal = DEBUG ? lerp(sqrt(dot(signal, signal) / 3.0), 0, k) : lerp(signal, p0, k);
+    
+    output = signal;
 }
 
 /*=============================================================================
@@ -316,7 +343,7 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
 /============================================================================*/
 technique UNiT_Sharpen < 
 ui_label = "UNiT: Sharpen";
-ui_tooltip = "					    	   UNiT: Frequency-Domain Sharpening \n\n" "________________________________________________________________________________________________\n\n" "A new approach to image sharpening working with full-scaled image instead fixed spatial kernels.\n" "This tech allows the effective restore certain details lost during TAAU/DLSS processing.\n\n" " - Developed by RG2PS - "; >
+ui_tooltip = "					    	   UNiT: Frequency Domain Sharpening \n\n" "________________________________________________________________________________________________\n\n" "A new approach to image sharpening working with full-scaled image instead fixed spatial kernels.\n" "This tech allows the effective restore certain details lost during TAAU/DLSS processing.\n\n" " - Developed by RG2PS - "; >
 {
     pass
     {

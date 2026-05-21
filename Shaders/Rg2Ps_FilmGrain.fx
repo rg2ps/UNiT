@@ -7,20 +7,20 @@
    Read the end-user license agreement to get more details.
 */
 
-uniform int _GrayFilm
+uniform int FILM_MODE
 <
     ui_type = "combo";
     ui_items = "Color\0Monochrome\0";
     ui_label = "Film Mode";
-> = 1;
+> = 0;
 
-uniform bool _Animate
+uniform bool ANIMATION
 <
     ui_label = "Animate Grain";
     ui_type = "radio";
 > = false;
 
-uniform float A
+uniform float GRAIN_AMOUNT
 <
     ui_type = "slider";
     ui_min = 0.01; ui_max = 1.0;
@@ -28,20 +28,23 @@ uniform float A
     ui_category = "Grain Processing";
 > = 0.6;
 
-uniform float _Size
+uniform float GRAIN_SIZE
 <
     ui_type = "slider";
     ui_min = 0.1; ui_max = 1.0;
     ui_label = "Grain Size";
     ui_category = "Grain Processing";
-> = 0.5;
+> = 0.35;
 
 /*=============================================================================
 /   Buffer Samplers Definition
 /============================================================================*/
 #include "ReShade.fxh" 
 
-uniform int frameCount < source = "framecount"; >;
+uniform int frameCount 
+< 
+    source = "framecount"; 
+>;
 
 #define MAX_GREY_SCALE 256
 
@@ -72,30 +75,19 @@ sampler sPoissonResult
 /*=============================================================================
 /   Global Helper Functions
 /============================================================================*/
-float3 to_linear(float3 x)
+float3 from_gamma(float3 x)
 {
     return x * x * sign(x);
 }
 
-float3 from_linear(float3 x)
+float3 to_gamma(float3 x)
 {
     return sqrt(abs(x)) * sign(x);
 }
 
 float gray3(float3 x)
 {
-    return from_linear(dot(to_linear(x), float3(0.2126729, 0.7151522, 0.072175)));
-}
-
-float erfinv(float x) 
-{
-    float tt1, tt2, lnx, sgn;
-    sgn = (x < 0.0f) ? -1.0f : 1.0f;
-    x = (1.0f - x) * (1.0f + x);
-    lnx = log(x);
-    tt1 = 2.0f / (3.14159265359f * 0.147f) + 0.5f * lnx;
-    tt2 = 1.0f / (0.147f) * lnx;
-    return sgn * sqrt(-tt1 + sqrt(tt1 * tt1 - tt2));
+    return to_gamma(dot(from_gamma(x), float3(0.2126729, 0.7151522, 0.072175)));
 }
 
 /*=============================================================================
@@ -113,14 +105,26 @@ uint hash32(uint2 x)
     return hash32(hash32(x.y) + x.x);
 }
 
+uint2 u_to_u2(uint x)
+{
+    return reversebits(uint2(x >> 16, x & 0xffff));
+}
+
 float rand_uniform_0_1(uint2 x) 
 {
     return float(hash32(x)) * exp2(-32.0);
 }
 
-uint signbit(uint x)
+float2 rand_uniform_0_1(uint2 x, uint k) 
 {
-    return 31 - firstbithigh(x | 1);
+    return float2(u_to_u2(hash32(x))) * exp2(-32.0);
+}
+
+float2 boxmuller(float2 u) 
+{
+    float2 dir; 
+	sincos(6.281853 * u.x, dir.y, dir.x);
+    return dir * sqrt(-2.0 * log(1.0 - u.y));
 }
 
 /*=============================================================================
@@ -128,12 +132,12 @@ uint signbit(uint x)
 /============================================================================*/
 float num_grains()
 {
-    return min(rcp(A), sqrt(MAX_GREY_SCALE));
+    return min(rcp(GRAIN_AMOUNT), sqrt(MAX_GREY_SCALE));
 }
 
 float num_grains_inv()
 {
-    return saturate(A + 0.5) * num_grains();
+    return saturate(GRAIN_AMOUNT + 0.5) * num_grains();
 }
 
 void poisson_lut(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2 output : SV_Target)
@@ -143,18 +147,17 @@ void poisson_lut(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out floa
     float exposure = (float)level / max_level; // ev in [0, 1]
 
     float beta = 1.0 / (num_grains() * num_grains());
-    float lambda = -log(1.0 - to_linear(exposure)) * num_grains();
+    float lambda = -log(1.0 - from_gamma(exposure)) * num_grains();
 
     // neg-binomial <-> poisson
-	float Q = lambda / (sqrt(lambda) * (1.0 - beta) + beta);
+	float q = lambda / (sqrt(lambda) * (1.0 - beta) + beta);
 
-    output = float2(Q, exp(-Q));  
+    output = float2(q, exp(-q));  
 }
 
 float gen_poisson(float2 lambda, uint seed, uint mip)
 {
-	int k = 0;              // num of trials
-    int strats = 1;         // num of colors
+	int k = 0;
 
     float p = 1.0;
     float pdf = lambda.y;
@@ -162,11 +165,11 @@ float gen_poisson(float2 lambda, uint seed, uint mip)
 	[loop]
 	do 
     {
-        strats += signbit(mip * seed);
-        
 	    k++;
-	    p *= rand_uniform_0_1(uint2(seed + strats, k));
-	    
+
+        float spp = rand_uniform_0_1(uint2(seed + k, mip));
+
+	    p *= spp;
 	    pdf *= lambda.x / float(k);
     }
     while (p > lambda.y); 
@@ -179,14 +182,14 @@ void monte_carlo(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out floa
     uint2 pos = uint2(vpos.xy);
     
     uint seed = hash32(pos);
-    if (_Animate) seed += reversebits(frameCount);
+    if (ANIMATION) seed += frameCount << 2;
 
     float3 color = saturate(tex2Dfetch(ReShade::BackBuffer, pos, 0).rgb); 
-    float gray_color = gray3(color);
+    float luma = gray3(color);
 
     float3 poisson = 0.0;
 
-    if (!_GrayFilm)
+    if (!FILM_MODE)
     {
         poisson.x = gen_poisson(tex2Dlod(sLambdaLUT, float4(color.x, 0, 0, 0)).xy, seed, 0);
         poisson.y = gen_poisson(tex2Dlod(sLambdaLUT, float4(color.y, 0, 0, 0)).xy, seed, 1);
@@ -194,22 +197,24 @@ void monte_carlo(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out floa
     }
     else
     {
-        poisson += gen_poisson(tex2Dlod(sLambdaLUT, float4(gray_color, 0, 0, 0)).xy, seed, 0);
+        poisson += gen_poisson(tex2Dlod(sLambdaLUT, float4(luma, 0, 0, 0)).xy, seed, 0);
     }
+
+    poisson /= num_grains_inv();
     
     // back to sdr
-    output = float4(min(1.4142, poisson / num_grains_inv()), 1.0);
+    output = float4(min(sqrt(2.0), poisson), 1.0);
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target)
 {
     float3 color = tex2Dfetch(ReShade::BackBuffer, vpos.xy, 0).rgb; 
-    if (_GrayFilm) color = gray3(color);
+    if (FILM_MODE) color = gray3(color);
 
     float3 sum = 0.0;
     float total = 0.0;
 
-    float2 gaussian = float2(1.0, 0.5 * _Size);
+    float2 gaussian = float2(1.0, GRAIN_SIZE / 2.0);
 
     [unroll]for(int i = -1; i <= 1; i++)
     [unroll]for(int j = -1; j <= 1; j++)
@@ -217,14 +222,12 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
         uint2 pos = uint2(vpos.xy) + uint2(i, j);
 	    float3 poisson = tex2Dfetch(sPoissonResult, pos, 0).rgb;
 
-        float seed = rand_uniform_0_1(pos);
-        float ndf = erfinv(seed * 2.0 - 1.0);
+        float2 seed = rand_uniform_0_1(pos, 0);
+        float2 ndf = boxmuller(seed);
+        float2 cellseed = ndf / num_grains();
 
-	    float sigma = rsqrt(2.0 / num_grains());
-        float cell_seed = ndf / (2.0 * sigma * sigma);
-
-        float x = length(float2(i, j) + cell_seed);
-        float weight = exp(-x * x);
+        float2 x = float2(i, j) + cellseed;
+        float weight = exp(-dot(x, x));
         
 	    weight *= gaussian[abs(i)] * gaussian[abs(j)];
 
@@ -232,7 +235,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 	    total += weight;
     }
 
-    float3 color_poisson = from_linear(sum / total);
+    float3 color_poisson = to_gamma(sum / total);
     
     output = lerp(color, color_poisson, 1.0 / num_grains());
 }

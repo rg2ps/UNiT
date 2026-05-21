@@ -8,7 +8,7 @@
    Read the end-user license agreement to get more details.
 */
 
-uniform float _Radius
+uniform float WORLD_RADIUS
 <
     ui_label = "Sampling Radius";
     ui_type = "slider";
@@ -16,7 +16,7 @@ uniform float _Radius
     ui_max = 1.0f;
 > = 0.6f;
 
-uniform float _FadeDist
+uniform float FADE_DISTANCE
 <
     ui_label = "Fade Distance";
     ui_type = "slider";
@@ -24,28 +24,52 @@ uniform float _FadeDist
     ui_max = 1.0f;
 > = 0.3;
 
-uniform float _Q
+uniform float Q
 <
-    ui_label = "Samples Accumulation";
-    ui_tooltip = "Determines the number of accumulated samples per frame. Higher values require motion vectors for stability.";
+    ui_label = "Q (Learing Rate)";
+    ui_tooltip = "Determines the filtering learning rate based on the current signal";
     ui_type = "slider";
-    ui_min = 0.1f;
-    ui_max = 0.9f;
-> = 0.5f;
+    ui_min = 1.0;
+    ui_max = 30.0;
+    ui_step = 0.01;
+    ui_category = "Denoising";
+	ui_category_closed = true;
+> = 10.0;
 
-uniform bool _Dm
+uniform float P
+<
+    ui_label = "P (Process Noise)";
+    ui_tooltip = "Determines the filter confidence in signal constancy.";
+    ui_type = "slider";
+    ui_min = 0.0;
+    ui_max = 0.01;
+    ui_category = "Denoising";
+    ui_category_closed = true;
+> = 0.001;
+
+uniform bool DEBUG
 <
     ui_label = "Show Raw AO";
     ui_type = "radio";
 > = false;
 
-uniform int _Zm
+uniform int DEPTH_MODE
 <
     ui_type = "combo";
     ui_items = "Default\0Inverse\0";
     ui_label = "Game Depth Mode";
     ui_tooltip = "Renders can use alternative depth mode. Turn inverse mode if shader don't work properly.";
     ui_category = "Scene Setup";
+    ui_category_closed = true;
+> = 0;
+
+uniform int isRGB
+<
+    ui_type = "combo";
+    ui_items = "sRGB\0Linear\0";
+    ui_label = "Render Mode";
+    ui_category = "Scene Setup";
+    ui_category_closed = true;
 > = 0;
 
 /*=============================================================================
@@ -54,15 +78,18 @@ uniform int _Zm
 #include "ReShade.fxh"
 
 #ifndef VBAO_SLICE_NUM
- #define VBAO_SLICE_NUM 4
+    #define VBAO_SLICE_NUM 4
 #endif 
-
-uniform int frameCount < source = "framecount"; >;
 
 // math..
 #define H_PI	1.570796326794
 #define PI     	3.141592653589
 #define TAU     6.283185307179
+
+uniform int framecounter 
+< 
+    source = "framecount"; 
+>;
 
 texture texGBuffer 
 {
@@ -137,6 +164,20 @@ sampler SamplerMotionVectors
 /*=============================================================================
 /   Global Helper Functions
 /============================================================================*/
+#define roundup(n, d) (int(n + d - 1) / int(d)) // ceil?
+
+float pow2(float x)
+{
+    return x * x;
+}
+
+float2 facos(const float2 x) 
+{
+    float2 v = saturate(abs(x));
+    float2 a = sqrt(1.0 - v) * (-0.16882 * v + 1.56734);
+    return x > 0.0 ? a : PI - a;
+}
+
 float linear_to_z_plane(float depth) 
 {
     return depth * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE;
@@ -144,7 +185,7 @@ float linear_to_z_plane(float depth)
 
 float get_ndc_depth(float2 uv) 
 {
-    return !_Zm ? linear_to_z_plane(ReShade::GetLinearizedDepth(uv)) : 1.0 / linear_to_z_plane(ReShade::GetLinearizedDepth(uv) + 1e-6);
+    return !DEPTH_MODE ? linear_to_z_plane(ReShade::GetLinearizedDepth(uv)) : 1.0 / linear_to_z_plane(ReShade::GetLinearizedDepth(uv) + 1e-6);
 }
 
 float get_lin_depth(float2 uv)
@@ -212,39 +253,74 @@ void write_gbuffer(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out fl
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
-#define roundup(n, d) (int(n + d - 1) / int(d)) // ceil?
+static const int permutation_table[8] = {0, 5, 2, 7, 1, 6, 3, 4}; // vogel > N=8
 
-float pow2(float x)
+float2 octohedral_encode(float3 vec)
 {
-    return x * x;
+    float2 encoded = vec.xy / dot(abs(vec), 1.0);
+    float2 sgn = vec.xy < 0.0 ? -1.0 : 1.0;
+    return vec.z < 0 ? sgn - abs(encoded.yx) * sgn : encoded;
 }
 
-float2 facos(const float2 x) 
+float3 cosinedir(float3 n, float r)
 {
-    float2 v = saturate(abs(x));
-    float2 a = sqrt(1.0 - v) * (-0.16882 * v + 1.56734);
-    return x > 0.0 ? a : PI - a;
+    float3 uu = normalize(cross(n, float3(0.0, 1.0, 1.0)));
+    float3 vv = cross(uu, n);
+    
+    float rad = frac(r * 0.38196601125);
+
+    float ra = sqrt(rad);
+    float rx = ra * cos(TAU * r); 
+    float ry = ra * sin(TAU * r);
+    float rz = sqrt(1.0 - rad);
+    float3 dir = normalize(rx*uu + ry*vv + rz*n);
+
+    float ar = cos(PI * r) * 0.5 + 0.5;
+    float w = rsqrt(ar * TAU); // importance-weighting
+
+    return float3(octohedral_encode(dir) * w, 0.0);
 }
 
-float fract16(in float x)
-{
-    return float((uint)x & 0xffffu);
-}
-
-float reversebits3(int x)
-{
-    return float(((x&4)>>2) | ((x&2)) | ((x&1)<<2));
-}
-
-float goldenratio_IGN(float2 p)
+float roberts1(float2 p)
 {
     return frac(0.5 + dot(p, float2(0.569840290998, 0.7548776662467)));
 }
 
-float seed_temp(float2 pos)
+float seedtemp(float2 pos)
 {
-    float offset = fract16(reversebits3(frameCount % 8) * 6.018);
-    return goldenratio_IGN(pos + offset);
+    return roberts1(pos + permutation_table[framecounter % 8] * 6.2);
+}
+
+float sampleDiffuseIsotropic(sampler2D s, float2 uv, float2 xy)
+{      
+    float2 pattern = float2(-0.4726, -1.2742); // erf⁻¹(2u-1)*√2: u₁ = 1/π, u₂ = u₁²
+
+    float a = tex2Dlod(s, float4(uv + float2( pattern.x,  pattern.y) * xy, 0, 0));
+    float b = tex2Dlod(s, float4(uv + float2(-pattern.x, -pattern.y) * xy, 0, 0));
+    float c = tex2Dlod(s, float4(uv + float2(-pattern.y,  pattern.x) * xy, 0, 0));
+    float d = tex2Dlod(s, float4(uv + float2( pattern.y, -pattern.x) * xy, 0, 0));
+    float e = tex2Dlod(s, float4(uv, 0, 0));
+
+    return (a + b + c + d + e) / 5.0;  
+}
+
+float sampleDiffuseAnisotropic(sampler2D s, float2 uv, float2 xy, float sigma = 16.0)
+{
+    float2 tap = float2(0.0, 1.5);
+
+    float a = tex2D(s, uv + tap.xy * xy);
+    float b = tex2D(s, uv - tap.xy * xy);
+    float c = tex2D(s, uv - tap.xx * xy);
+    float d = tex2D(s, uv + tap.yx * xy);
+    float e = tex2D(s, uv - tap.yx * xy);
+
+    // exp(-|∇u|² / K²)
+    float wa = exp(-pow2(abs(a-c) * sigma));
+    float wb = exp(-pow2(abs(b-c) * sigma));
+    float wd = exp(-pow2(abs(d-c) * sigma));
+    float we = exp(-pow2(abs(e-c) * sigma));
+
+    return c + 0.5 * (wa*(a-c) + wb*(b-c) + wd*(d-c) + we*(e-c));
 }
 
 /*=============================================================================
@@ -252,27 +328,12 @@ float seed_temp(float2 pos)
 /============================================================================*/
 static const uint sector_count = 32u;
 
-float3 cosine_hemisphere_pdf(float3 n, float r)
-{
-    float3 uu = normalize(cross(n, float3(0.0, 1.0, 1.0)));
-    float3 vv = cross(uu, n);
-
-    float3 v;
-    sincos(TAU * r, v.y, v.x);
-    v.xy *= sqrt(r);
-    v.z = sqrt(1.0 - r);
-
-    float pdf = rsqrt(2.0 * abs(cos(PI * r)));
-    float3 uvec = normalize(v.x*uu + v.y*vv + v.z*n);
-
-    return float3(uvec.xy / dot(abs(uvec), 1.0), 0.0) * pdf;
-}
-
 float integrate_bitfield(in float2 h)
 {
     uint bitfield_mask = 0xffffffffu; // https://issues.angleproject.org/issues/353039526
 
     uint2 h_id = uint2(round(h * sector_count));
+
     uint h_min = h_id.x < sector_count ? bitfield_mask << h_id.x : 0u;
     uint h_max = h_id.y != 0u ? bitfield_mask >> (sector_count - h_id.y) : 0u;
 
@@ -283,19 +344,18 @@ float integrate_bitfield(in float2 h)
 
 float tangent_horizon(float d_sq, float cos_h)
 {
-    float sector_angle = 360.0 / float(sector_count);
-    float max_cosine = cos(radians(sector_angle));
+    float angle = 360.0 / float(sector_count);
+    float maxcosine = cos(radians(angle));
 
-    float theta = 1.0 - min(max_cosine, _Radius);
-	float theta_sq = theta * theta;
+    // the angle cannot be greater than the actual radius of the horizon coverage
+    maxcosine = min(maxcosine, WORLD_RADIUS);
 
-    float phi = 2.0 * (1.0 - cos_h);
-	float cos_phi = (phi * (2.0 - phi));
+	float theta_sq = (1.0 - maxcosine) * (1.0 - maxcosine);
+	float cos_phi = 4.0 * cos_h * (1.0 - cos_h);
 
-    float Rd = ((theta_sq * d_sq) / PI) / abs(cos_phi);
-    float Rd2 = saturate(Rd * Rd);
+    float tangent = (theta_sq * d_sq) / abs(cos_phi);
 
-    return Rd2 / (1.0 - Rd2);
+    return asin(tangent / PI);
 }
 
 [numthreads(24, 24, 1)] void write_occlusion(uint3 id : SV_DispatchThreadID)
@@ -309,33 +369,34 @@ float tangent_horizon(float d_sq, float cos_h)
     float3 view_dir = normalize(-view_pos);
     float3 normal = tex2Dfetch(sGBuffer, vpos.xy, 0).xyz;
 
-    float world_radius = pow2(_Radius) * BUFFER_WIDTH;
-    float rel_radius = log2(view_pos.z + 1.0);
-    float radius = world_radius / rel_radius;
+    float world_radius = pow2(WORLD_RADIUS) * BUFFER_WIDTH;
+    float pixel_radius = log2(view_pos.z + 1.0);
+
+    float radius = world_radius / pixel_radius;
     float step_size = max(VBAO_SLICE_NUM, radius) / VBAO_SLICE_NUM;
 
 	float2 h = -1.0;
 
-    float random = seed_temp(float2(vpos.xy));
-    float3 slice_dir = cosine_hemisphere_pdf(normal, random);
+    float random = seedtemp(float2(vpos.xy));
+    float3 slice_dir = cosinedir(normal, random);
 
 	float step_length = step_size;
 
 	[loop]
 	for (int slice = 0; slice < VBAO_SLICE_NUM; ++slice)
 	{
-        float ray_seed = step_length * random + float(slice);
-	    float2 tap = slice_dir.xy * max(ray_seed, float(slice) + 1.0) * BUFFER_PIXEL_SIZE;
-	    float4 ray_tap = float4(uv + tap, uv - tap);
+        float increment = step_length * random;
+	    float2 coord = slice_dir.xy * increment * BUFFER_PIXEL_SIZE;
+	    float4 ruv = float4(uv + coord, uv - coord);
 
-        if (any(saturate(ray_tap) != ray_tap))
+        if (any(saturate(ruv) != ruv))
         {
 		    break;
    	    }
 
 	    for (int pairs = 0; pairs < 2; ++pairs)
 	    {
-			float3 sample_pos = ndc_to_view(pairs == 0 ? ray_tap.xy : ray_tap.zw);
+			float3 sample_pos = ndc_to_view(pairs == 0 ? ruv.xy : ruv.zw);
 			float3 sample_center = sample_pos - view_pos;
 
 			float dist_sqr = dot(sample_center, sample_center);
@@ -366,6 +427,9 @@ float tangent_horizon(float d_sq, float cos_h)
 	h.x = gamma + max(-h.x - gamma, -H_PI);
 	h.y = gamma + min( h.y - gamma,  H_PI);
 
+    // TODO: In this implementation, I use one SPP for optimization. If multiple samples are used (in future maybe) necessary to flip the horizon on second sample
+    // h = id > 0 ? h.yx : h.xy;
+
     // [0, 1]
 	h = saturate((h + theta_sign + H_PI) / PI);
     
@@ -379,52 +443,28 @@ void variance_online(inout float2 value, float2 uv)
 	float2 uv_p = uv + tex2D(SamplerMotionVectors, uv).rg;
 	float2 moments = tex2D(sPackedHistory, uv_p);
 
-	float pred = value.x - moments.x;
-	if (!all(uv_p > 0 && uv_p < BUFFER_SCREEN_SIZE)) pred = 1.0;
+    bool isinscreen = all(uv_p > 0 && uv_p < BUFFER_SCREEN_SIZE);
+
+    float signal = value.x;
+    float prevsignal = moments.x;
+
+	float pred = signal - prevsignal;
+
+	if (!isinscreen) pred = 1.0;
+
+	float dev = abs(pred);
 	float cov_sq = (pred - moments.y) * (pred - moments.y);
+    float dev_sq = dev * dev;
 
-	float scale_dev = abs(pred);
-    float max_dev = saturate((scale_dev / _Q) + cov_sq);
+    float K = saturate((dev_sq * Q) + rsqrt(cov_sq) * P);
 	
-	value.x = lerp(moments.x, value.x, max_dev);
+	value.x = lerp(prevsignal, signal, K);
 	value.y = pred;
-}
-
-float gather_sample(sampler2D s, float2 uv, float2 xy)
-{      
-    float2 tap = float2(-0.4726, -1.2742); // erf⁻¹(2u-1)*√2: u₁ = 1/π, u₂ = u₁²
-
-    float a = tex2Dlod(s, float4(uv + float2( tap.x,  tap.y) / xy, 0, 0));
-    float b = tex2Dlod(s, float4(uv + float2(-tap.x, -tap.y) / xy, 0, 0));
-    float d = tex2Dlod(s, float4(uv + float2(-tap.y,  tap.x) / xy, 0, 0));
-    float e = tex2Dlod(s, float4(uv + float2( tap.y, -tap.x) / xy, 0, 0));
-    float c = tex2Dlod(s, float4(uv, 0, 0));
-    
-    return (a + b + c + d + e) / 5.0;  
-}
-
-float diffuse_sample(sampler2D s, float2 uv, float2 xy, float sigma = 16.0)
-{
-    float2 tap = float2(0.0, 1.5);
-
-    float a = tex2D(s, uv + tap.xy * xy);
-    float b = tex2D(s, uv - tap.xy * xy);
-    float c = tex2D(s, uv - tap.xx * xy);
-    float d = tex2D(s, uv + tap.yx * xy);
-    float e = tex2D(s, uv - tap.yx * xy);
-
-    // perona-malik pde: exp(-|∇u|² / K²)
-    float c_a = exp(-pow2(abs(a-c) * sigma));
-    float c_b = exp(-pow2(abs(b-c) * sigma));
-    float c_d = exp(-pow2(abs(d-c) * sigma));
-    float c_e = exp(-pow2(abs(e-c) * sigma));
-
-    return c + 0.5 * (c_a*(a-c) + c_b*(b-c) + c_d*(d-c) + c_e*(e-c));
 }
 
 void guided_filtering(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2 output : SV_Target)
 {
-    float2 signal = float2(gather_sample(sRawOcclusion, texcoord, BUFFER_SCREEN_SIZE), 1.0);  
+    float2 signal = float2(sampleDiffuseIsotropic(sRawOcclusion, texcoord, BUFFER_PIXEL_SIZE), 1.0);  
     variance_online(signal, texcoord);  
     output = signal;
 }
@@ -436,22 +476,24 @@ void pack_history(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out flo
 
 float get_fade_factor(float2 uv)
 {
-    return saturate(saturate(length(ndc_to_view(uv)) / RESHADE_DEPTH_LINEARIZATION_FAR_PLANE) / _FadeDist);
+    return saturate(saturate(length(ndc_to_view(uv)) / RESHADE_DEPTH_LINEARIZATION_FAR_PLANE) / FADE_DISTANCE);
 }
 
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
 {
     float3 color = tex2Dfetch(ReShade::BackBuffer, vpos.xy, 0).rgb;
-    float occlusion = diffuse_sample(sGatheredOcclusion, uv, BUFFER_PIXEL_SIZE);
+    float occlusion = sampleDiffuseAnisotropic(sGatheredOcclusion, uv, BUFFER_PIXEL_SIZE);
 
     float fadefactor = get_fade_factor(uv);
     occlusion = lerp(occlusion, 1.0, fadefactor);
 
+	if (isRGB) color *= color;
     color = color / (1.0 - color + rcp(255.0));
     color *= occlusion;
     color = color / (1.0 + color);
+    if (isRGB) color = sqrt(color);
 
-    output = _Dm ? occlusion.xxx : color;
+    output = DEBUG ? occlusion.xxx : color;
 }
 
 /*=============================================================================
