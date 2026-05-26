@@ -206,7 +206,7 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
     float3 guide = 0;
     float ws = 0;
 
-    for (int i = 0; i < 6; i++) 
+    for (int i = 0; i <= 6; i++) 
     {
         float w = exp2(-float(i) / 0.5);
         guide += p[i] * w;
@@ -219,12 +219,14 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
 
     for (int i = 5; i >= 0; i--)
     {
-        float w = exp(float(i) * 0.5);
-        
-        float3 reference = do_remap(p[i] - p[i+1], w);
+        float sigma = exp2(float(i) * 0.5);
+        float3 reference = do_remap(abs(p[i] - p[i+1]), sigma);
+
+        float sigma_o = exp(-luminance(reference)) * sigma;
+        float3 update_reference = do_remap(p[i] - p[i+1], sigma_o);
         
         float L0 = luminance(signal);
-        float L1 = luminance(reference);
+        float L1 = luminance(update_reference);
         
         signal *= (L0 + L1) / L0;
     }
