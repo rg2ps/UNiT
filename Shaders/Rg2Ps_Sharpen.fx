@@ -305,7 +305,7 @@ float3 do_remap(in float3 x, out float k)
 
     k = error;
 	
-	return x * sqrt(SIGMA_CONVOLUTION) * 2.0;
+	return x * sqrt(STRENGTH * SIGMA_CONVOLUTION) * 2.0;
 }
 
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
