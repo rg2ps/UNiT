@@ -70,7 +70,7 @@ uniform int isRGB
     ui_label = "Render Mode";
     ui_category = "Scene Setup";
     ui_category_closed = true;
-> = 0;
+> = 1;
 
 /*=============================================================================
 /   Preprocessing Definitions
@@ -291,38 +291,6 @@ float seedtemp(float2 pos)
     return roberts1(pos + permutation_table[framecounter % 8] * 6.2);
 }
 
-float sampleDiffuseIsotropic(sampler2D s, float2 uv, float2 xy)
-{      
-    float2 pattern = float2(-0.4726, -1.2742); // erf⁻¹(2u-1)*√2: u₁ = 1/π, u₂ = u₁²
-
-    float a = tex2Dlod(s, float4(uv + float2( pattern.x,  pattern.y) * xy, 0, 0));
-    float b = tex2Dlod(s, float4(uv + float2(-pattern.x, -pattern.y) * xy, 0, 0));
-    float c = tex2Dlod(s, float4(uv + float2(-pattern.y,  pattern.x) * xy, 0, 0));
-    float d = tex2Dlod(s, float4(uv + float2( pattern.y, -pattern.x) * xy, 0, 0));
-    float e = tex2Dlod(s, float4(uv, 0, 0));
-
-    return (a + b + c + d + e) / 5.0;  
-}
-
-float sampleDiffuseAnisotropic(sampler2D s, float2 uv, float2 xy, float sigma = 16.0)
-{
-    float2 tap = float2(0.0, 1.5);
-
-    float a = tex2D(s, uv + tap.xy * xy);
-    float b = tex2D(s, uv - tap.xy * xy);
-    float c = tex2D(s, uv - tap.xx * xy);
-    float d = tex2D(s, uv + tap.yx * xy);
-    float e = tex2D(s, uv - tap.yx * xy);
-
-    // exp(-|∇u|² / K²)
-    float wa = exp(-pow2(abs(a-c) * sigma));
-    float wb = exp(-pow2(abs(b-c) * sigma));
-    float wd = exp(-pow2(abs(d-c) * sigma));
-    float we = exp(-pow2(abs(e-c) * sigma));
-
-    return c + 0.5 * (wa*(a-c) + wb*(b-c) + wd*(d-c) + we*(e-c));
-}
-
 /*=============================================================================
 /   Main Shader Workflow
 /============================================================================*/
@@ -346,8 +314,6 @@ float tangent_horizon(float d_sq, float cos_h)
 {
     float angle = 360.0 / float(sector_count);
     float maxcosine = cos(radians(angle));
-
-    // the angle cannot be greater than the actual radius of the horizon coverage
     maxcosine = min(maxcosine, WORLD_RADIUS);
 
 	float theta_sq = (1.0 - maxcosine) * (1.0 - maxcosine);
@@ -462,10 +428,22 @@ void variance_online(inout float2 value, float2 uv)
 	value.y = pred;
 }
 
-void guided_filtering(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2 output : SV_Target)
+void guided_filtering(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float2 output : SV_Target)
 {
-    float2 signal = float2(sampleDiffuseIsotropic(sRawOcclusion, texcoord, BUFFER_PIXEL_SIZE), 1.0);  
-    variance_online(signal, texcoord);  
+    float2 signal = float2(1.0, 1.0);
+
+    float2 pattern = float2(-0.4726, -1.2742); // erf⁻¹(2u-1)*√2: u₁ = 1/π, u₂ = u₁²
+	float2 xy = BUFFER_PIXEL_SIZE;
+
+    float a = tex2Dlod(sRawOcclusion, float4(uv + float2( pattern.x,  pattern.y) * xy, 0, 0));
+    float b = tex2Dlod(sRawOcclusion, float4(uv + float2(-pattern.x, -pattern.y) * xy, 0, 0));
+    float c = tex2Dlod(sRawOcclusion, float4(uv + float2(-pattern.y,  pattern.x) * xy, 0, 0));
+    float d = tex2Dlod(sRawOcclusion, float4(uv + float2( pattern.y, -pattern.x) * xy, 0, 0));
+    float e = tex2Dlod(sRawOcclusion, float4(uv, 0, 0));
+
+    signal.x = (a + b + c + d + e) / 5.0;  
+    variance_online(signal, uv);  
+
     output = signal;
 }
 
@@ -482,7 +460,25 @@ float get_fade_factor(float2 uv)
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
 {
     float3 color = tex2Dfetch(ReShade::BackBuffer, vpos.xy, 0).rgb;
-    float occlusion = sampleDiffuseAnisotropic(sGatheredOcclusion, uv, BUFFER_PIXEL_SIZE);
+
+    float2 offset = float2(0.0, 1.5);
+	float2 xy = BUFFER_PIXEL_SIZE;
+	float k_sigma = 16.0;
+
+    float a = tex2D(sGatheredOcclusion, uv + offset.xy * xy);
+    float b = tex2D(sGatheredOcclusion, uv - offset.xy * xy);
+    float c = tex2D(sGatheredOcclusion, uv - offset.xx * xy);
+    float d = tex2D(sGatheredOcclusion, uv + offset.yx * xy);
+    float e = tex2D(sGatheredOcclusion, uv - offset.yx * xy);
+
+    // exp(-|∇u|² / K²)
+    float wa = exp(-pow2(abs(a-c) * k_sigma));
+    float wb = exp(-pow2(abs(b-c) * k_sigma));
+    float wd = exp(-pow2(abs(d-c) * k_sigma));
+    float we = exp(-pow2(abs(e-c) * k_sigma));
+
+    float filtered = c + 0.5 * (wa*(a-c) + wb*(b-c) + wd*(d-c) + we*(e-c));
+	float occlusion = filtered;
 
     float fadefactor = get_fade_factor(uv);
     occlusion = lerp(occlusion, 1.0, fadefactor);
