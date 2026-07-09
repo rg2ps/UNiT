@@ -15,13 +15,14 @@ uniform float INTENSITY
     ui_min = 0.001; ui_max = 1.0;
 > = 0.5;
 
-uniform float SENSITIVITY
+uniform float SHAPE
 <
     ui_type = "drag";
-    ui_label = "Sensitivity";
+    ui_label = "Shape";
     ui_category = "Globals";
-    ui_min = 0.001; ui_max = 1.0;
-> = 0.75;
+    ui_tooltip = "Lower values produce isotropic scattering (haze), while higher values produce anisotropic scattering (direct rays).";
+    ui_min = 0.5; ui_max = 0.95;
+> = 0.8;
 
 uniform float UIMASK
 <
@@ -110,11 +111,6 @@ float rnd(float2 p)
     return frac(0.5 + p.x * 0.7548776662467 + p.y * 0.569840290998);
 }
 
-float3 normsq(float3 x)
-{
-    return x * x * rsqrt(dot(x, x) / 3.0 + 1e-10);
-}
-
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
@@ -126,17 +122,15 @@ float4 d0(sampler2D s, float2 uv, float mip)
     float sigma = exp2(mip / 2.0);
     float2 mip_texel = BUFFER_PIXEL_SIZE * exp2(mip);
 
-    int r = ceil(sigma);
-
-    for(int x = -r; x <= r; x++) 
-    for(int y = -r; y <= r; y++) 
+    for(int x = -ceil(sigma); x <= ceil(sigma); x++) 
+    for(int y = -ceil(sigma); y <= ceil(sigma); y++) 
     {
 	    float2 offset = float2(x, y);
-	    float2 scoord = uv + offset * mip_texel;
+	    float2 s_uv = uv + offset * mip_texel;
 	    
         float weight = exp(-dot(offset, offset) / sigma);
 
-	    sum += tex2Dlod(s, float4(scoord, 0, 0)) * weight;
+	    sum += tex2Dlod(s, float4(s_uv, 0, 0)) * weight;
 	    wsum += weight;
     }
 
@@ -145,12 +139,14 @@ float4 d0(sampler2D s, float2 uv, float mip)
 
 float4 d1(sampler2D s, float2 uv, float mip)
 {
-    float2 offset = 1.5 * BUFFER_PIXEL_SIZE * exp2(mip);
+    float2 mip_texel = BUFFER_PIXEL_SIZE * exp2(mip);
+    
+    mip_texel *= 1.5;
 
-    float4 a = tex2Dlod(s, float4(uv + float2(-offset.x, 0), 0, 0));
-    float4 b = tex2Dlod(s, float4(uv + float2( offset.x, 0), 0, 0));
-    float4 c = tex2Dlod(s, float4(uv + float2(0, -offset.y), 0, 0));
-    float4 d = tex2Dlod(s, float4(uv + float2(0,  offset.y), 0, 0));
+    float4 a = tex2Dlod(s, float4(uv + float2(-mip_texel.x, 0), 0, 0));
+    float4 b = tex2Dlod(s, float4(uv + float2( mip_texel.x, 0), 0, 0));
+    float4 c = tex2Dlod(s, float4(uv + float2(0, -mip_texel.y), 0, 0));
+    float4 d = tex2Dlod(s, float4(uv + float2(0,  mip_texel.y), 0, 0));
     float4 e = tex2Dlod(s, float4(uv, 0, 0));
     
     return e * 0.41242 + (a + b + c + d) * 0.14684;
@@ -179,23 +175,30 @@ void do_dither(in float v, inout float3 x)
 /*
     Writes irradiance map for bloom propagation
 */
+float3 phase_hg(float3 x, float g)
+{
+    float gg = g * g;
+    return (gg * -0.25 / 3.1415926 + 0.25 / 3.1415926) * pow(-2.0 * (g * x) + (gg + 1.0), -1.5);
+}
+
 void psfmap(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target0)
 {
 	// subpixel (atomsized) offset to prevent degenerate (noisy) pixels from being included in the calculation
 	// this reduces the accumulation error at each light propagation level.
-    float3 sdr = d1(ReShade::BackBuffer, texcoord, -32.0).rgb;
-    float3 hdr = pow(sdr, 2.2);
-
-    // https://www.ipol.im/pub/art/2020/300/article.pdf
-    const float gamma = 0.05 * SENSITIVITY;
-
-    float3 v = saturate(grayscale(sdr)); 
-    float3 k = -(0.5 - 0.5*pow((1.0 - v) / 0.5, gamma)); 
-    float3 m = 255.0f / log10(abs(k) * 255.0 + 1.0);
-    float3 P = max(0.0, (sdr - abs(k) / gamma) * gamma);
-    float3 x = max(0.0, (255.0f - m) * (abs(k) * hdr));
+    float3 color = d1(ReShade::BackBuffer, texcoord, -32.0).rgb;
     
-    output = float4(P + normsq(x), get_depth(texcoord));
+    const float3x3 rgb2lmsr = float3x3
+    (
+	    0.31399022, 0.63951294, 0.04649755,
+	    0.15537241, 0.75789446, 0.08670142,
+	    0.01775239, 0.10944209, 0.87256922
+    );
+
+    float3 sigma = sqrt(mul(rgb2lmsr, min(color, 0.999)));
+
+    float3 P = phase_hg(sigma, SHAPE);
+    
+    output = float4(pow(P, 2.2), get_depth(texcoord));
 }
 
 /*
