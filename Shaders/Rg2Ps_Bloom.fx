@@ -13,7 +13,7 @@ uniform float INTENSITY
     ui_label = "Intensity";
     ui_category = "Globals";
     ui_min = 0.001; ui_max = 1.0;
-> = 0.5;
+> = 0.3;
 
 uniform float SHAPE
 <
@@ -91,11 +91,6 @@ float get_depth(float2 uv)
     return (!DEPTH_MODE ? ReShade::GetLinearizedDepth(uv) : 1.0 / ReShade::GetLinearizedDepth(uv)) + 1e-6;
 }
 
-float grayscale(float3 x)
-{
-    return dot(x, float3(0.2126729, 0.7151522, 0.072175));
-}
-
 float3 from_hdr(float3 x) 
 {
     return x * rsqrt(1.0 + x * x);
@@ -106,7 +101,7 @@ float3 to_hdr(float3 x)
    return x * rsqrt(1.0 - x * x + rcp(255.0));
 }
 
-float rnd(float2 p)
+float weylrand(float2 p)
 {
     return frac(0.5 + p.x * 0.7548776662467 + p.y * 0.569840290998);
 }
@@ -114,78 +109,73 @@ float rnd(float2 p)
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
-float4 d0(sampler2D s, float2 uv, float mip) 
+float4 texelConvolute(sampler2D s, float2 uv, float mip) 
 {   
     float4 sum = 0.0;
     float wsum = 0.0;
 
     float sigma = exp2(mip / 2.0);
-    float2 mip_texel = BUFFER_PIXEL_SIZE * exp2(mip);
+    float2 texel = BUFFER_PIXEL_SIZE * exp2(mip);
 
     for(int x = -ceil(sigma); x <= ceil(sigma); x++) 
     for(int y = -ceil(sigma); y <= ceil(sigma); y++) 
     {
 	    float2 offset = float2(x, y);
-	    float2 s_uv = uv + offset * mip_texel;
-	    
         float weight = exp(-dot(offset, offset) / sigma);
-
-	    sum += tex2Dlod(s, float4(s_uv, 0, 0)) * weight;
+	    sum += tex2Dlod(s, float4(uv + offset * texel, 0, 0)) * weight;
 	    wsum += weight;
     }
 
     return wsum > 0 ? sum / wsum : 0;
 }
 
-float4 d1(sampler2D s, float2 uv, float mip)
+float4 texelUpsample(sampler2D s, float2 uv, float mip)
 {
-    float2 mip_texel = BUFFER_PIXEL_SIZE * exp2(mip);
-    
-    mip_texel *= 1.5;
+    float2 texel = BUFFER_PIXEL_SIZE * exp2(mip);
+    texel *= 1.5;
 
-    float4 a = tex2Dlod(s, float4(uv + float2(-mip_texel.x, 0), 0, 0));
-    float4 b = tex2Dlod(s, float4(uv + float2( mip_texel.x, 0), 0, 0));
-    float4 c = tex2Dlod(s, float4(uv + float2(0, -mip_texel.y), 0, 0));
-    float4 d = tex2Dlod(s, float4(uv + float2(0,  mip_texel.y), 0, 0));
+    float4 a = tex2Dlod(s, float4(uv + float2(-texel.x, 0), 0, 0));
+    float4 b = tex2Dlod(s, float4(uv + float2( texel.x, 0), 0, 0));
+    float4 c = tex2Dlod(s, float4(uv + float2(0, -texel.y), 0, 0));
+    float4 d = tex2Dlod(s, float4(uv + float2(0,  texel.y), 0, 0));
     float4 e = tex2Dlod(s, float4(uv, 0, 0));
     
     return e * 0.41242 + (a + b + c + d) * 0.14684;
 }
 
-void applyUI(inout float3 x, float center, float average, float alpha)
+float get_spatialmasking(float x0, float x1)
 {
-    x *= saturate(exp2(-alpha * (abs(center - average) / average) / 1000.0));
+    return exp2(-0.0625 * UIMASK * max(0.0, abs(x0 - x1) / x0));
 }
 
-void do_dither(in float v, inout float3 x)
+void do_pixeldither(in float2 p, inout float3 x)
 {
     float bit = exp2(DITHER_BIT_DEPTH) - 1;
     
     float3 qumin = floor(x * bit) / bit;
-    float3 qumax =  ceil(x * bit) / bit;
+    float3 qumax = ceil(x * bit) / bit;
 
     float3 threshold = saturate((x - qumin) / (qumax - qumin));
 
-    x = lerp(qumin, qumax, step(v, threshold));
+    x = lerp(qumin, qumax, step(weylrand(p), threshold));
 }
 
 /*=============================================================================
 /   Main Shader Workflow
 /============================================================================*/
-/*
-    Writes irradiance map for bloom propagation
-*/
-float3 phase_hg(float3 x, float g)
+float3 phasehg(float3 x, float g)
 {
     float gg = g * g;
     return (gg * -0.25 / 3.1415926 + 0.25 / 3.1415926) * pow(-2.0 * (g * x) + (gg + 1.0), -1.5);
 }
-
+/*
+    Writes irradiance map for bloom propagation
+*/
 void psfmap(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target0)
 {
 	// subpixel (atomsized) offset to prevent degenerate (noisy) pixels from being included in the calculation
 	// this reduces the accumulation error at each light propagation level.
-    float3 color = d1(ReShade::BackBuffer, texcoord, -32.0).rgb;
+    float3 color = texelUpsample(ReShade::BackBuffer, texcoord, -32.0).rgb;
     
     const float3x3 rgb2lmsr = float3x3
     (
@@ -194,87 +184,84 @@ void psfmap(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 ou
 	    0.01775239, 0.10944209, 0.87256922
     );
 
-    float3 sigma = sqrt(mul(rgb2lmsr, min(color, 0.999)));
-
-    float3 P = phase_hg(sigma, SHAPE);
+    float3 g = mul(rgb2lmsr, min(color, 0.999));
+    float3 P = phasehg(g, SHAPE);
     
     output = float4(pow(P, 2.2), get_depth(texcoord));
 }
-
 /*
     Start the low-pass composing: L_k = (S_k ∘ S_[k-1] ∘ ... ∘ S₀)(P)
 */
 void decomp0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d0(sBloomGenerate, texcoord, 1);
+    o = texelConvolute(sBloomGenerate, texcoord, 1);
 }
 
 void decomp1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-   o = d0(sBloomCascade0, texcoord, 2);
+   o = texelConvolute(sBloomCascade0, texcoord, 2);
 }
 
 void decomp2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d0(sBloomCascade1, texcoord, 3);
+    o = texelConvolute(sBloomCascade1, texcoord, 3);
 }
 
 void decomp3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d0(sBloomCascade2, texcoord, 4);
+    o = texelConvolute(sBloomCascade2, texcoord, 4);
 }
 
 void decomp4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d0(sBloomCascade3, texcoord, 5);
+    o = texelConvolute(sBloomCascade3, texcoord, 5);
 }
 
 void decomp5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d0(sBloomCascade4, texcoord, 6);
+    o = texelConvolute(sBloomCascade4, texcoord, 6);
 }
 
 void decomp6(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d0(sBloomCascade5, texcoord, 7);
+    o = texelConvolute(sBloomCascade5, texcoord, 7);
 }
-
 /*
     End of composing, start the upsampling: { L_k + R_[k] .. G_k + H_[k] }
 */
 void recomp5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d1(sBloomCascade6, texcoord, 7);
+    o = texelUpsample(sBloomCascade6, texcoord, 7);
 }
 
 void recomp4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d1(sBloomCascade5, texcoord, 6);
+    o = texelUpsample(sBloomCascade5, texcoord, 6);
 }
 
 void recomp3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d1(sBloomCascade4, texcoord, 5);
+    o = texelUpsample(sBloomCascade4, texcoord, 5);
 }
 
 void recomp2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d1(sBloomCascade3, texcoord, 4);
+    o = texelUpsample(sBloomCascade3, texcoord, 4);
 }
 
 void recomp1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d1(sBloomCascade2, texcoord, 3);
+    o = texelUpsample(sBloomCascade2, texcoord, 3);
 }
 
 void recomp0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    o = d1(sBloomCascade1, texcoord, 2);
+    o = texelUpsample(sBloomCascade1, texcoord, 2);
 }
 
-void bandfetch(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 output : SV_Target)
+void bandfetch(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target)
 {
-    output = 
+    o = 
         tex2D(sBloomCascade0, texcoord) * 0.285714 +
         tex2D(sBloomCascade1, texcoord) * 0.238095 +
         tex2D(sBloomCascade2, texcoord) * 0.190476 +
@@ -287,8 +274,8 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 {
     float3 color = tex2D(ReShade::BackBuffer, texcoord).xyz;
     float4 bloom = tex2D(sBloomFetch, texcoord);
-
-    applyUI(bloom.rgb, bloom.w, get_depth(texcoord), UIMASK);
+    
+    bloom.rgb *= get_spatialmasking(get_depth(texcoord), bloom.w);
     
     color = pow(color, 2.2);
 
@@ -298,7 +285,7 @@ void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 outp
 
     color = pow(color, rcp(2.2));
 
-    do_dither(rnd(vpos.xy), color);
+    do_pixeldither(vpos.xy, color);
 
     output = color;
 }
