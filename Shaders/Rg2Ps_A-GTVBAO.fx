@@ -53,6 +53,11 @@ uniform bool DEBUG
     ui_type = "radio";
 > = false;
 
+uniform bool II
+<
+    ui_type = "radio";
+> = false;
+
 uniform int DEPTH_MODE
 <
     ui_type = "combo";
@@ -90,6 +95,8 @@ uniform int framecounter
 < 
     source = "framecount"; 
 >;
+
+#define CEIL_DIV(n, d) (int(n + d - 1) / int(d))
 
 texture texGBuffer 
 {
@@ -164,8 +171,6 @@ sampler SamplerMotionVectors
 /*=============================================================================
 /   Global Helper Functions
 /============================================================================*/
-#define roundup(n, d) (int(n + d - 1) / int(d)) // ceil?
-
 float pow2(float x)
 {
     return x * x;
@@ -253,8 +258,6 @@ void write_gbuffer(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out fl
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
-static const int permutation_table[8] = {0, 5, 2, 7, 1, 6, 3, 4}; // vogel > N=8
-
 float2 octohedral_encode(float3 vec)
 {
     float2 encoded = vec.xy / dot(abs(vec), 1.0);
@@ -262,23 +265,31 @@ float2 octohedral_encode(float3 vec)
     return vec.z < 0 ? sgn - abs(encoded.yx) * sgn : encoded;
 }
 
-float3 cosinedir(float3 n, float r)
+float3 gen_cosinedirection(float3 n, float2 r)
 {
-    float3 uu = normalize(cross(n, float3(0.0, 1.0, 1.0)));
-    float3 vv = cross(uu, n);
+    //float3 uu = normalize(cross(n, float3(0.0, 1.0, 1.0)));
+    //float3 vv = cross(uu, n);
     
-    float rad = frac(r * 0.38196601125);
+    float3 uu = normalize(cross(abs(n.y) < 0.999 ? float3(0,1,0) : float3(1,0,0), n));
+    float3 vv = cross(uu, n);
 
-    float ra = sqrt(rad);
-    float rx = ra * cos(TAU * r); 
-    float ry = ra * sin(TAU * r);
-    float rz = sqrt(1.0 - rad);
-    float3 dir = normalize(rx*uu + ry*vv + rz*n);
+    float ra = sqrt(r.y);
+    float rx = ra * cos(TAU * r.x); 
+    float ry = ra * sin(TAU * r.x);
+    float rz = sqrt(1.0 - r.y);
 
-    float ar = cos(PI * r) * 0.5 + 0.5;
+    return rx*uu + ry*vv + rz*n;
+}
+
+float3 gen_sliceuniform(float3 n, float2 r)
+{
+    float3 d3 = gen_cosinedirection(n, r);
+
+    float ar = cos(PI * r.x) * 0.5 + 0.5;
     float w = rsqrt(ar * TAU); // importance-weighting
+    float2 d2 = octohedral_encode(d3) * w;
 
-    return float3(octohedral_encode(dir) * w, 0.0);
+    return float3(d2, 0.0);
 }
 
 float roberts1(float2 p)
@@ -286,9 +297,14 @@ float roberts1(float2 p)
     return frac(0.5 + dot(p, float2(0.569840290998, 0.7548776662467)));
 }
 
-float seedtemp(float2 pos)
+float2 roberts2from1(float r)
 {
-    return roberts1(pos + permutation_table[framecounter % 8] * 6.2);
+    return float2(r, frac(r * PI));
+}
+
+float generate_workseed(float2 pos)
+{
+    return roberts1(pos + (framecounter % 8) * 17);
 }
 
 /*=============================================================================
@@ -298,28 +314,36 @@ static const uint sector_count = 32u;
 
 float integrate_bitfield(in float2 h)
 {
-    uint bitfield_mask = 0xffffffffu; // https://issues.angleproject.org/issues/353039526
+    uint fullmask = 0xffffffffu; // https://issues.angleproject.org/issues/353039526
 
-    uint2 h_id = uint2(round(h * sector_count));
+    uint2 sector_id = uint2(round(h * sector_count));
 
-    uint h_min = h_id.x < sector_count ? bitfield_mask << h_id.x : 0u;
-    uint h_max = h_id.y != 0u ? bitfield_mask >> (sector_count - h_id.y) : 0u;
+    uint lh = sector_id.x < sector_count 
+        ? fullmask << sector_id.x 
+        : 0u;
 
-    uint occluded_bitfield = countbits(h_min & h_max); 
+    uint uh = sector_id.y != 0u 
+        ? fullmask >> (sector_count - sector_id.y) 
+        : 0u;
+
+    uint occluded_sector_count = countbits(lh & uh); 
     
-    return float(sector_count - occluded_bitfield) / float(sector_count);      
+    return float(sector_count - occluded_sector_count) / float(sector_count);      
 }
 
 float tangent_horizon(float d_sq, float cos_h)
 {
     float angle = 360.0 / float(sector_count);
-    float maxcosine = cos(radians(angle));
-    maxcosine = min(maxcosine, WORLD_RADIUS);
 
-	float theta_sq = (1.0 - maxcosine) * (1.0 - maxcosine);
-	float cos_phi = 4.0 * cos_h * (1.0 - cos_h);
+    float sec_size = radians(angle); 
+    float sam_size = acos(1.0 - WORLD_RADIUS);
 
-    float tangent = (theta_sq * d_sq) / abs(cos_phi);
+    float cos_a = cos(sec_size / sam_size);
+
+	float t_sq = (1.0 - cos_a) * (1.0 - cos_a);
+    float h_sq = (1.0 - cos_h) * (1.0 - cos_h);
+
+    float tangent = (t_sq * d_sq) / h_sq;
 
     return asin(tangent / PI);
 }
@@ -335,7 +359,7 @@ float tangent_horizon(float d_sq, float cos_h)
     float3 view_dir = normalize(-view_pos);
     float3 normal = tex2Dfetch(sGBuffer, vpos.xy, 0).xyz;
 
-    float world_radius = pow2(WORLD_RADIUS) * BUFFER_WIDTH;
+    float world_radius = WORLD_RADIUS * BUFFER_WIDTH;
     float pixel_radius = log2(view_pos.z + 1.0);
 
     float radius = world_radius / pixel_radius;
@@ -343,8 +367,14 @@ float tangent_horizon(float d_sq, float cos_h)
 
 	float2 h = -1.0;
 
-    float random = seedtemp(float2(vpos.xy));
-    float3 slice_dir = cosinedir(normal, random);
+    float random = generate_workseed(float2(vpos.xy));
+    float3 slice_dir = gen_sliceuniform(normal, roberts2from1(random));
+    
+	//float theta = acos(random);
+    //float phi = asin(1.0 - 2.0 * random);
+    //float r = sqrt(1.0 - phi * phi);
+	//float3 d = float3(r * cos(theta), phi, r * sin(theta));
+	//float3 slice_dir = float3((d.xy + 0.5) * (2.0 / PI), 0.0);
 
 	float step_length = step_size;
 
@@ -379,15 +409,15 @@ float tangent_horizon(float d_sq, float cos_h)
 
 	float3 tangent = normalize(cross(slice_dir, view_dir));
 	float3 bitangent = cross(view_dir, tangent);
-	float3 plane_normal = normal - tangent * dot(normal, tangent);
-	float plane_distance = rsqrt(dot(plane_normal, plane_normal));
+	float3 ortho_normal = normal - tangent * dot(normal, tangent);
+	float normalength = rsqrt(dot(ortho_normal, ortho_normal));
 
-	float cos_n = dot(plane_normal, bitangent) * plane_distance;
-	float gamma = facos(cos_n) - H_PI;
-	float cos_gamma = dot(plane_normal, view_dir) * plane_distance;
+	float cos_phi = dot(ortho_normal, bitangent) * normalength;
+	float gamma = facos(cos_phi) - H_PI;
+	float cos_gamma = dot(ortho_normal, view_dir) * normalength;
 
 	float3 ortho_dir = slice_dir - dot(slice_dir, view_dir) * view_dir;
-    float theta_sign = sign(dot(ortho_dir, plane_normal)) * facos(cos_gamma);
+    float theta_sign = sign(dot(ortho_dir, ortho_normal)) * facos(cos_gamma);
 
     // clamp horizon into hemisphere
 	h.x = gamma + max(-h.x - gamma, -H_PI);
@@ -397,9 +427,10 @@ float tangent_horizon(float d_sq, float cos_h)
     // h = id > 0 ? h.yx : h.xy;
 
     // [0, 1]
-	h = saturate((h + theta_sign + H_PI) / PI);
-    
-    float visibility = saturate(integrate_bitfield(h) * H_PI);
+	float2 hn = saturate((h + theta_sign + H_PI) / PI);
+
+    // calculate total visibility in [0, 1]
+    float visibility = integrate_bitfield(hn) * H_PI;
 
     tex2Dstore(stRawOcclusion, id.xy, float4(1.0 - visibility, 1.0, 1.0, 1.0));
 }
@@ -509,8 +540,8 @@ ui_tooltip = "									UNiT: A-GTVBAO \n\n" "___________________________________
     pass
     {
         ComputeShader = write_occlusion<24, 24>;
-        DispatchSizeX = roundup(BUFFER_WIDTH, 24);
-        DispatchSizeY = roundup(BUFFER_HEIGHT, 24);
+        DispatchSizeX = CEIL_DIV(BUFFER_WIDTH,  24);
+        DispatchSizeY = CEIL_DIV(BUFFER_HEIGHT, 24);
     }
 
     pass
