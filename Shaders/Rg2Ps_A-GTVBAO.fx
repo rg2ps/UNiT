@@ -53,11 +53,6 @@ uniform bool DEBUG
     ui_type = "radio";
 > = false;
 
-uniform bool II
-<
-    ui_type = "radio";
-> = false;
-
 uniform int DEPTH_MODE
 <
     ui_type = "combo";
@@ -268,9 +263,7 @@ float2 octohedral_encode(float3 vec)
 float3 gen_cosinedirection(float3 n, float2 r)
 {
     //float3 uu = normalize(cross(n, float3(0.0, 1.0, 1.0)));
-    //float3 vv = cross(uu, n);
-    
-    float3 uu = normalize(cross(abs(n.y) < 0.999 ? float3(0,1,0) : float3(1,0,0), n));
+    float3 uu = normalize(cross(abs(n.y) < 0.999 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0), n));
     float3 vv = cross(uu, n);
 
     float ra = sqrt(r.y);
@@ -281,7 +274,7 @@ float3 gen_cosinedirection(float3 n, float2 r)
     return rx*uu + ry*vv + rz*n;
 }
 
-float3 gen_sliceuniform(float3 n, float2 r)
+float3 gen_slicedir_from_uniform(float3 n, float2 r)
 {
     float3 d3 = gen_cosinedirection(n, r);
 
@@ -368,13 +361,7 @@ float tangent_horizon(float d_sq, float cos_h)
 	float2 h = -1.0;
 
     float random = generate_workseed(float2(vpos.xy));
-    float3 slice_dir = gen_sliceuniform(normal, roberts2from1(random));
-    
-	//float theta = acos(random);
-    //float phi = asin(1.0 - 2.0 * random);
-    //float r = sqrt(1.0 - phi * phi);
-	//float3 d = float3(r * cos(theta), phi, r * sin(theta));
-	//float3 slice_dir = float3((d.xy + 0.5) * (2.0 / PI), 0.0);
+    float3 slice_dir = gen_slicedir_from_uniform(normal, roberts2from1(random));
 
 	float step_length = step_size;
 
@@ -463,13 +450,13 @@ void guided_filtering(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float
 {
     float2 signal = float2(1.0, 1.0);
 
-    float2 pattern = float2(-0.4726, -1.2742); // erf⁻¹(2u-1)*√2: u₁ = 1/π, u₂ = u₁²
+    float2 oxy = float2(-0.4726, -1.2742); // erf⁻¹(2u-1)*√2: u₁ = 1/π, u₂ = u₁²
 	float2 xy = BUFFER_PIXEL_SIZE;
 
-    float a = tex2Dlod(sRawOcclusion, float4(uv + float2( pattern.x,  pattern.y) * xy, 0, 0));
-    float b = tex2Dlod(sRawOcclusion, float4(uv + float2(-pattern.x, -pattern.y) * xy, 0, 0));
-    float c = tex2Dlod(sRawOcclusion, float4(uv + float2(-pattern.y,  pattern.x) * xy, 0, 0));
-    float d = tex2Dlod(sRawOcclusion, float4(uv + float2( pattern.y, -pattern.x) * xy, 0, 0));
+    float a = tex2Dlod(sRawOcclusion, float4(uv + float2( oxy.x,  oxy.y) * xy, 0, 0));
+    float b = tex2Dlod(sRawOcclusion, float4(uv + float2(-oxy.x, -oxy.y) * xy, 0, 0));
+    float c = tex2Dlod(sRawOcclusion, float4(uv + float2(-oxy.y,  oxy.x) * xy, 0, 0));
+    float d = tex2Dlod(sRawOcclusion, float4(uv + float2( oxy.y, -oxy.x) * xy, 0, 0));
     float e = tex2Dlod(sRawOcclusion, float4(uv, 0, 0));
 
     signal.x = (a + b + c + d + e) / 5.0;  
@@ -492,15 +479,15 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
 {
     float3 color = tex2Dfetch(ReShade::BackBuffer, vpos.xy, 0).rgb;
 
-    float2 offset = float2(0.0, 1.5);
+    float2 oxy = float2(0.0, 1.5);
 	float2 xy = BUFFER_PIXEL_SIZE;
 	float k_sigma = 16.0;
 
-    float a = tex2D(sGatheredOcclusion, uv + offset.xy * xy);
-    float b = tex2D(sGatheredOcclusion, uv - offset.xy * xy);
-    float c = tex2D(sGatheredOcclusion, uv - offset.xx * xy);
-    float d = tex2D(sGatheredOcclusion, uv + offset.yx * xy);
-    float e = tex2D(sGatheredOcclusion, uv - offset.yx * xy);
+    float a = tex2D(sGatheredOcclusion, uv + oxy.xy * xy);
+    float b = tex2D(sGatheredOcclusion, uv - oxy.xy * xy);
+    float c = tex2D(sGatheredOcclusion, uv - oxy.xx * xy);
+    float d = tex2D(sGatheredOcclusion, uv + oxy.yx * xy);
+    float e = tex2D(sGatheredOcclusion, uv - oxy.yx * xy);
 
     // exp(-|∇u|² / K²)
     float wa = exp(-pow2(abs(a-c) * k_sigma));
