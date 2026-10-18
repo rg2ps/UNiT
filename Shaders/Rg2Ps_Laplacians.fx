@@ -51,60 +51,35 @@ float luminance(float3 x)
 
 float3 to_hdr(float3 x)
 {
-    return -log2(1.0 - min(0.9999999, x / 1.1));
+    return x * rsqrt(1.0 - x * x);
 }
 
 float3 from_hdr(float3 x)
 {
-    return clamp((1.0 - exp2(-x)) * 1.1, -1.0, 1.0);
+	return x * rsqrt(1.0 + x * x);
 }
 
 /*=============================================================================
 /   Workspace Helper Functions
 /============================================================================*/
-float3 fx(float3 x)
+float3 sigmoid(float3 x)
 {
-    return (sin(x) * sin(x)) / abs(x + 1e-9);
+    return sin(x) / abs(++x);
 }
 
-float3 do_remap(in float3 x, float sigma)
+float3 do_remap(in float3 x, float omega)
 {
-	const float HALF_PI = 1.57079;
-
     float alpha = ALPHA < 0.0 ? ALPHA / 2.0 : ALPHA;
-	
-	float s = sigma * 2.8284;
-	float s2 = s * s;
-	
-	float3 ax = min(abs(x) * s2, HALF_PI);
-
-	float3 y = fx(ax);
-	
-	return sign(x) * y / s2 * sqrt(s) * alpha;
-}
-
-float3 sp(sampler2D s, float2 uv, float N)
-{
-    float2 offset = BUFFER_PIXEL_SIZE / N;
-    float x = offset.x;
-    float y = offset.y;
-
-    float3 a = tex2Dlod(s, float4(uv.x - 2*x, uv.y + 2*y, 0, 0)).rgb;
-    float3 b = tex2Dlod(s, float4(uv.x,       uv.y + 2*y, 0, 0)).rgb;
-    float3 c = tex2Dlod(s, float4(uv.x + 2*x, uv.y + 2*y, 0, 0)).rgb;
-    float3 d = tex2Dlod(s, float4(uv.x - 2*x, uv.y, 0, 0)).rgb;
-    float3 e = tex2Dlod(s, float4(uv.x,       uv.y, 0, 0)).rgb;
-    float3 f = tex2Dlod(s, float4(uv.x + 2*x, uv.y, 0, 0)).rgb;
-    float3 g = tex2Dlod(s, float4(uv.x - 2*x, uv.y - 2*y, 0, 0)).rgb;
-    float3 h = tex2Dlod(s, float4(uv.x,       uv.y - 2*y, 0, 0)).rgb;
-    float3 i = tex2Dlod(s, float4(uv.x + 2*x, uv.y - 2*y, 0, 0)).rgb;
-    float3 j = tex2Dlod(s, float4(uv.x - x, uv.y + y, 0, 0)).rgb;
-    float3 k = tex2Dlod(s, float4(uv.x + x, uv.y + y, 0, 0)).rgb;
-    float3 l = tex2Dlod(s, float4(uv.x - x, uv.y - y, 0, 0)).rgb;
-    float3 m = tex2Dlod(s, float4(uv.x + x, uv.y - y, 0, 0)).rgb;
     
-    // todo: there is probably no need for 13 points to cover the first level, so this can be replaced with a cross or box approximation
-    return e*0.125 + (a+c+g+i)*0.03125 + (b+d+f+h)*0.0625 + (j+k+l+m)*0.125;
+    float hpi = 1.57079632679489;
+	
+	float sigma = omega * 2.828427124;
+	float sigma_sqr = sigma * sigma;	
+	
+	float3 ax = clamp(abs(x) * sigma_sqr, -hpi, hpi);
+	float3 yx = sigmoid(ax);
+	
+	return sign(x) * yx / sigma_sqr * sqrt(sigma) * alpha;
 }
 
 float4 cubic(float v) 
@@ -124,9 +99,34 @@ float4 cubic(float v)
     return w / 6.0;
 }
 
-float3 ssp(sampler2D s, float2 coord, float N)
+float3 texelDownsample(sampler2D s, float2 uv, float N)
 {
-    float2 size = BUFFER_SCREEN_SIZE / (N * 1.4142);
+    float2 offset = BUFFER_PIXEL_SIZE / N;
+
+    float x = offset.x;
+    float y = offset.y;
+
+    float3 a = tex2Dlod(s, float4(uv.x - 2*x, uv.y + 2*y, 0, 0)).rgb;
+    float3 b = tex2Dlod(s, float4(uv.x,       uv.y + 2*y, 0, 0)).rgb;
+    float3 c = tex2Dlod(s, float4(uv.x + 2*x, uv.y + 2*y, 0, 0)).rgb;
+    float3 d = tex2Dlod(s, float4(uv.x - 2*x, uv.y, 0, 0)).rgb;
+    float3 e = tex2Dlod(s, float4(uv.x,       uv.y, 0, 0)).rgb;
+    float3 f = tex2Dlod(s, float4(uv.x + 2*x, uv.y, 0, 0)).rgb;
+    float3 g = tex2Dlod(s, float4(uv.x - 2*x, uv.y - 2*y, 0, 0)).rgb;
+    float3 h = tex2Dlod(s, float4(uv.x,       uv.y - 2*y, 0, 0)).rgb;
+    float3 i = tex2Dlod(s, float4(uv.x + 2*x, uv.y - 2*y, 0, 0)).rgb;
+    float3 j = tex2Dlod(s, float4(uv.x - x, uv.y + y, 0, 0)).rgb;
+    float3 k = tex2Dlod(s, float4(uv.x + x, uv.y + y, 0, 0)).rgb;
+    float3 l = tex2Dlod(s, float4(uv.x - x, uv.y - y, 0, 0)).rgb;
+    float3 m = tex2Dlod(s, float4(uv.x + x, uv.y - y, 0, 0)).rgb;
+    
+    // todo: there is probably no need for 13 points to cover the first level, so this can be replaced by cross sampling
+    return e*0.125 + (a+c+g+i)*0.03125 + (b+d+f+h)*0.0625 + (j+k+l+m)*0.125;
+}
+
+float3 texelUpsample(sampler2D s, float2 coord, float N)
+{
+    float2 size = BUFFER_SCREEN_SIZE * rsqrt(N * N * 2.0); //BUFFER_SCREEN_SIZE / (N * 1.4142);
  
     float2 uv = coord * size - 0.5;
     float2 fxy = frac(uv);
@@ -157,50 +157,50 @@ float3 ssp(sampler2D s, float2 coord, float N)
 /============================================================================*/
 void t1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(sp(ReShade::BackBuffer, texcoord, 1.0), 1.0);
+    o = float4(texelDownsample(ReShade::BackBuffer, texcoord, 1.0), 1.0);
 }
 
 void t2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(sp(sGaussianSam1Level, texcoord, 0.5), 1.0);
+    o = float4(texelDownsample(sGaussianSam1Level, texcoord, 0.5), 1.0);
 }
 
 void t3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(sp(sGaussianSam2Level, texcoord, 0.25), 1.0);
+    o = float4(texelDownsample(sGaussianSam2Level, texcoord, 0.25), 1.0);
 }
 
 void t4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(sp(sGaussianSam3Level, texcoord, 0.125), 1.0);
+    o = float4(texelDownsample(sGaussianSam3Level, texcoord, 0.125), 1.0);
 }
 
 void t5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(sp(sGaussianSam4Level, texcoord, 0.0625), 1.0);
+    o = float4(texelDownsample(sGaussianSam4Level, texcoord, 0.0625), 1.0);
 }
 void t6(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float4 o : SV_Target) 
 {
-    o = float4(sp(sGaussianSam5Level, texcoord, 0.03125), 1.0);
+    o = float4(texelDownsample(sGaussianSam5Level, texcoord, 0.03125), 1.0);
 }
 
 void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : SV_Target)
 {
-    float3 p[7];
+    float3 g[7];
 
     float3 center = tex2Dfetch(ReShade::BackBuffer, vpos.xy, 0).rgb;
 
-    p[0] = center, 
-    p[1] = ssp(sGaussianSam1Level, uv, 1).rgb,  // 1
-    p[2] = ssp(sGaussianSam2Level, uv, 2).rgb,  // 2
-    p[3] = ssp(sGaussianSam3Level, uv, 3).rgb,  // 3
-    p[4] = ssp(sGaussianSam4Level, uv, 4).rgb,  // 4
-    p[5] = ssp(sGaussianSam5Level, uv, 5).rgb,  // 5
-    p[6] = ssp(sGaussianSam6Level, uv, 6).rgb;  // 6
+    g[0] = center, 
+    g[1] = texelUpsample(sGaussianSam1Level, uv, 1).rgb,  // 1
+    g[2] = texelUpsample(sGaussianSam2Level, uv, 2).rgb,  // 2
+    g[3] = texelUpsample(sGaussianSam3Level, uv, 3).rgb,  // 3
+    g[4] = texelUpsample(sGaussianSam4Level, uv, 4).rgb,  // 4
+    g[5] = texelUpsample(sGaussianSam5Level, uv, 5).rgb,  // 5
+    g[6] = texelUpsample(sGaussianSam6Level, uv, 6).rgb;  // 6
 
     for (int i = 0; i <= 6; i++)
     {
-        p[i] = to_hdr(p[i]);
+        g[i] = to_hdr(g[i]);
     }
 
     float3 guide = 0;
@@ -208,8 +208,8 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
 
     for (int i = 0; i <= 6; i++) 
     {
-        float w = exp2(-float(i) / 0.5);
-        guide += p[i] * w;
+        float w = exp(-float(i));
+        guide += g[i] * w;
         ws += w;
     }
 
@@ -219,11 +219,15 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
 
     for (int i = 5; i >= 0; i--)
     {
-        float sigma = exp2(float(i) * 0.5);
-        float3 reference = do_remap(abs(p[i] - p[i+1]), sigma);
+    	float3 delta_a = g[i] - g[0];
+    	float3 delta_b = g[i] - g[i+1];
 
-        float sigma_o = exp(-luminance(reference)) * sigma;
-        float3 update_reference = do_remap(p[i] - p[i+1], sigma_o);
+		float lambda = dot(delta_a, delta_a) * float(-i);
+		
+		float3 update_reference = do_remap(delta_b, exp(-lambda + 1.0));
+		float3 residual = delta_b * exp(-float(i));
+		
+        update_reference = update_reference + residual * saturate(ALPHA);
         
         float L0 = luminance(signal);
         float L1 = luminance(update_reference);
@@ -231,7 +235,7 @@ void main(float4 vpos : SV_Position, float2 uv : TEXCOORD, out float3 output : S
         signal *= (L0 + L1) / L0;
     }
 
-    output = from_hdr(signal);
+    output = from_hdr(min(signal, 65536.0));
 }
 
 /*=============================================================================
